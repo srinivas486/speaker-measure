@@ -261,6 +261,7 @@ class MeasurementOrchestrator:
                     self.engine.playback_device.id,
                     self.engine.capture_device.id,
                 ),
+                channels=2,
                 dtype="float32",
                 blocking=True,
             )
