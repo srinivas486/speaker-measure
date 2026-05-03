@@ -7,6 +7,7 @@ import numpy as np
 import sounddevice as sd
 from pathlib import Path
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional, Callable, Protocol
 import logging
 
@@ -69,6 +70,9 @@ class MeasurementConfig:
     num_subwoofers: int = 0  # number of subwoofers to measure (e.g. 2 or 4).
                               # If 0, auto-detected from HDMI. If HDMI reports fewer,
                               # only measure that many.
+    mic_calibration_path: Optional[str | Path] = None
+    mic_positions: int = 1   # number of mic positions for spatial averaging
+    sweep_duration_sec: float = 6.0  # longer sweep for better low-freq resolution
 
 
 class MeasurementOrchestrator:
@@ -312,7 +316,12 @@ class MeasurementOrchestrator:
                 ref_distance_meters=0.0,
             )
 
-            wav_path = self.exporter.export_ir_wav(ir, channel.channel_id, self.config.sample_rate)
+            # Filename includes position index: FL0, FL1, SW1_0, SW1_1
+            pos_label = str(position_index)
+            fname_base = f"{channel.channel_id}_{pos_label}"
+            wav_path = self.exporter.export_ir_wav(
+                ir, fname_base, self.config.sample_rate, output_dir=self._output_dir
+            )
             result.wav_path = wav_path
             result.distance_m = dist_m
             result.delay_ms = delay_ms
@@ -477,6 +486,8 @@ class MeasurementOrchestrator:
 
 
 if __name__ == "__main__":
+    import os
+
     logging.basicConfig(level=logging.INFO)
 
     def demo_switch_callback(target: int, all_subs: list[int]) -> None:
@@ -489,23 +500,18 @@ if __name__ == "__main__":
         input("   Press ENTER after switching subwoofers...")
 
     config = MeasurementConfig(
-        channels=[
-            ChannelConfig(channel_id="fl", speaker_distance_m=3.2),
-            ChannelConfig(channel_id="c", speaker_distance_m=3.0, reference_channel=True),
-            ChannelConfig(channel_id="fr", speaker_distance_m=3.2),
-            ChannelConfig(channel_id="sw1", is_subwoofer=True, speaker_distance_m=4.0),
-            ChannelConfig(channel_id="sw2", is_subwoofer=True, speaker_distance_m=4.2),
-        ],
         sample_rate=48000,
         buffer_size=1024,
-        mic_positions=1,
         pause_for_subwoofer_switch=True,
+        suggested_avr_volume_db=-15.0,
+        sweep_amplitude_dbfs=-12.0,
+        sweep_amplitude_dbfs_lfe=-30.0,
     )
     config.subwoofer_switch_callback = demo_switch_callback
 
     orch = MeasurementOrchestrator(config)
 
-    # Interactive device selection
+    # ── Device selection ───────────────────────────────────────────────
     print("\n=== Device Configuration ===")
     pb, cap, num_subwoofers = orch.engine.interactive_pick_devices()
     orch.engine.set_playback_device(pb)
@@ -513,22 +519,61 @@ if __name__ == "__main__":
     orch.engine.set_sample_rate(config.sample_rate)
     orch.engine.set_buffer_size(config.buffer_size)
 
-    # Build channel list from detected playback device layout
+    # ── Calibration file (optional) ────────────────────────────────────
+    default_cal = os.path.join(os.path.expanduser("~"), "Downloads", "UMIK-1_calibration.txt")
+    cal_path = input(f"\nCalibration file path [press Enter for {default_cal}]: ").strip()
+    if not cal_path:
+        cal_path = default_cal
+    if os.path.exists(cal_path):
+        config.mic_calibration_path = cal_path
+        orch.calibration.load_file(cal_path)
+        print(f"  Calibration loaded: {cal_path}")
+    else:
+        print(f"  No calibration file found at '{cal_path}' — measurements will be uncorrected (relative dB)")
+
+    # ── Layout from device channel count ───────────────────────────────
     ch_list = orch.engine.build_channel_list_for_device(pb, num_subwoofers=num_subwoofers)
     config.channels = [
-        ChannelConfig(
-            channel_id=label,
-            is_subwoofer=is_sub,
-            speaker_distance_m=3.0,
-        )
+        ChannelConfig(channel_id=label, is_subwoofer=is_sub, speaker_distance_m=3.0)
         for label, _, is_sub in ch_list
     ]
-    config.num_subwoofers = num_subwoofers
 
-    print("\nChannels to measure:")
+    # ── Subwoofer count (only asked if LFE detected) ──────────────────
+    if num_subwoofers > 0:
+        config.num_subwoofers = num_subwoofers
+        config.pause_for_subwoofer_switch = True
+    else:
+        config.pause_for_subwoofer_switch = False
+
+    # ── Multi-position option ─────────────────────────────────────────
+    num_positions_str = input(f"\nNumber of mic positions to measure [1]: ").strip()
+    config.mic_positions = int(num_positions_str) if num_positions_str else 1
+    if config.mic_positions < 1:
+        config.mic_positions = 1
+
+    # ── Summary ────────────────────────────────────────────────────────
+    print(f"\nOutput folder: {orch._output_dir}")
+    print(f"\nChannels to measure:")
     for ch in config.channels:
         sub_tag = " (subwoofer)" if ch.is_subwoofer else ""
         print(f"  {ch.channel_id}{sub_tag}")
+    print(f"  Positions per channel: {config.mic_positions}")
+    if config.num_subwoofers > 0:
+        print(f"  Subwoofer switching: ON (manual — watch for prompts)")
 
+    print(f"\nSuggested AVR master volume: {config.suggested_avr_volume_db:.0f} dB")
+    confirm = input("\nPress ENTER to start measurement... ").strip()
+
+    # ── Measure ─────────────────────────────────────────────────────────
     results = orch.run()
-    print(f"\nMeasurement complete! {len(results)} channels measured.")
+    success = [r for r in results if r.success]
+    failed = [r for r in results if not r.success]
+
+    print(f"\nMeasurement complete!")
+    print(f"  {len(success)}/{len(results)} sweeps successful")
+    if failed:
+        print(f"  Failed channels: {[r.channel_id for r in failed]}")
+    print(f"  Output folder: {orch._output_dir}")
+    print(f"\n  WAV files ready for REW import:")
+    for r in success:
+        print(f"    {orch._output_dir.name}/{Path(r.wav_path).name}")

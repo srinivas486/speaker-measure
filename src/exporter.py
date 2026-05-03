@@ -41,20 +41,23 @@ class WavExporter:
         channel_id: str,
         sample_rate: int = 48000,
         is_stereo: bool = True,
+        output_dir: Optional[Path] = None,
     ) -> Path:
         """Export impulse response as 48 kHz stereo WAV file.
 
         Args:
             ir: Impulse response, mono (N,) or stereo (N, 2)
-            channel_id: Channel name like 'fl', 'c', 'sw1'
+            channel_id: Channel name with position index, e.g. 'FL0', 'SW1_1'
             sample_rate: Sample rate (default 48000)
+            output_dir: Override output directory (default: use self.output_dir)
 
         Returns:
             Path to saved WAV file.
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{channel_id.lower()}_{timestamp}.wav"
-        out_path = self.output_dir / filename
+        out_dir = output_dir if output_dir is not None else self.output_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{channel_id.lower()}.wav"
+        out_path = out_dir / filename
 
         # Ensure stereo (required by REW)
         if ir.ndim == 1:
