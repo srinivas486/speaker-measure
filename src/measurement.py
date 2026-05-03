@@ -365,31 +365,28 @@ class MeasurementOrchestrator:
     # -------------------------------------------------------------------------
 
     def run(self) -> list[MeasurementResult]:
-        """Run measurements for all configured channels.
+        """Run measurements for all channels at each position before moving the mic.
 
-        For multi-subwoofer setups, prompts the user to switch subwoofers
-        between each sub measurement so only the target sub plays.
+        Order: all channels at position 0 → all channels at position 1 → ...
+        This keeps the mic in one place until all measurements at that spot are done.
         """
         all_results: list[MeasurementResult] = []
-        sub_measured: set[int] = set()  # tracks which sub indices have been measured
+        sub_measured: set[int] = set()
 
         total_ops = len(self.config.channels) * self.config.mic_positions
         op_idx = 0
 
-        for ch in self.config.channels:
-            if self._cancelled:
-                break
-
-            # ---- Pre-subwoofer measurement prompt ----
-            if ch.is_subwoofer and self.config.pause_for_subwoofer_switch:
-                sub_idx = self._get_sub_index_from_channel_id(ch.channel_id)
-                if sub_idx is not None and sub_idx not in sub_measured:
-                    self._notify_subwoofer_switch(sub_idx)
-                    sub_measured.add(sub_idx)
-
-            for pos in range(self.config.mic_positions):
+        for pos in range(self.config.mic_positions):
+            for ch in self.config.channels:
                 if self._cancelled:
                     break
+
+                # ---- Pre-subwoofer measurement prompt (first time we see this sub) ----
+                if ch.is_subwoofer and self.config.pause_for_subwoofer_switch:
+                    sub_idx = self._get_sub_index_from_channel_id(ch.channel_id)
+                    if sub_idx is not None and sub_idx not in sub_measured:
+                        self._notify_subwoofer_switch(sub_idx)
+                        sub_measured.add(sub_idx)
 
                 op_idx += 1
                 self._report_progress(
@@ -398,6 +395,10 @@ class MeasurementOrchestrator:
                 )
                 result = self.measure_single_channel(ch, position_index=pos)
                 all_results.append(result)
+
+            # Prompt user to move mic to next position
+            if not self._cancelled and pos < self.config.mic_positions - 1:
+                input(f"  ➤ Position {pos+1} complete — move mic to position {pos+2} and press ENTER...")
 
         return all_results
 

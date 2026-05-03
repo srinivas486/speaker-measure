@@ -224,6 +224,12 @@ class Deconvolver:
 class SignalProcessor:
     """High-level signal processor coordinating sweep generation and deconvolution."""
 
+    # Frequency ranges
+    SPEAKER_START_HZ = 20.0
+    SPEAKER_END_HZ = 30000.0    # matches UMIK-1 and most pro measurement mics
+    SUB_START_HZ = 15.0        # slightly below 20 Hz to capture sub bass fully
+    SUB_END_HZ = 250.0         # subwoofers only need up to 250 Hz
+
     def __init__(
         self,
         sample_rate: int = 48000,
@@ -240,14 +246,24 @@ class SignalProcessor:
         self.deconvolver = Deconvolver(sample_rate=sample_rate)
 
     def generate_sweep(self, is_subwoofer: bool = False) -> np.ndarray:
-        """Generate sweep with amplitude appropriate for the channel type.
+        """Generate sweep with frequency range and amplitude appropriate for the channel type.
 
-        Subwoofers get a much lower amplitude sweep to avoid overdriving the driver.
+        Subwoofers: 15 Hz → 250 Hz  (full sub-bass capture without wasting sweep energy on highs)
+        Speakers:   20 Hz → 30 kHz  (full range, matches UMIK-1/measurement mic capabilities)
         """
         amp = self.amplitude_dbfs_lfe if is_subwoofer else self.amplitude_dbfs
-        # Only recreate SweepGenerator if amplitude changed
+        start_hz = self.SUB_START_HZ if is_subwoofer else self.SPEAKER_START_HZ
+        end_hz = self.SUB_END_HZ if is_subwoofer else self.SPEAKER_END_HZ
+
+        # Only recreate SweepGenerator if amplitude or frequency range changed
+        key = (amp, start_hz, end_hz)
         if not hasattr(self, '_sweep_gen') or self._sweep_gen.amplitude_dbfs != amp:
-            self._sweep_gen = SweepGenerator(sample_rate=self.sample_rate, amplitude_dbfs=amp)
+            self._sweep_gen = SweepGenerator(
+                sample_rate=self.sample_rate,
+                amplitude_dbfs=amp,
+                start_hz=start_hz,
+                end_hz=end_hz,
+            )
             self._inv_filter = None  # reset cached inverse filter
         return self._sweep_gen.generate()
 
