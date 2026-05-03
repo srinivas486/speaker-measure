@@ -224,11 +224,20 @@ class Deconvolver:
 class SignalProcessor:
     """High-level signal processor coordinating sweep generation and deconvolution."""
 
-    # Frequency ranges
-    SPEAKER_START_HZ = 20.0
-    SPEAKER_END_HZ = 30000.0    # matches UMIK-1 and most pro measurement mics
-    SUB_START_HZ = 15.0        # slightly below 20 Hz to capture sub bass fully
-    SUB_END_HZ = 250.0         # subwoofers only need up to 250 Hz
+    # Frequency ranges — based on UMIK-1 calibrated range (20 Hz–20 kHz nominal)
+    # UMIK-1 capsule resonance ~10 Hz, so reliable response starts ~15-20 Hz.
+    # FIR filter target: 48 kHz sample rate → useful to ~23.9 kHz (Nyquist).
+    # Room reflections above ~500 Hz make HF sweep data unreliable for direct use;
+    # Acourate applies smoothing and windowing anyway.
+    #
+    # Low end: sweep duration drives resolution. 6 s sweep = 0.17 Hz bin → room modes OK.
+    # High end: 20 kHz is the ceiling of human hearing and the UMIK-1 calibrated range.
+    # Going to 24 kHz captures a little more HF tail but calibration uncertainty grows.
+    SPEAKER_START_HZ = 20.0      # low: UMIK-1 calibrated lower limit (~20 Hz)
+    SPEAKER_END_HZ = 20000.0     # high: UMIK-1 rated range, Nyquist headroom via 48 kHz sr
+    SUB_START_HZ = 15.0          # slightly below 20 Hz to fully capture sub-bass room modes
+    SUB_END_HZ = 250.0          # subwoofers need 15–250 Hz for room correction; >250 Hz crosses
+                                # into speaker midrange where subs can't play cleanly
 
     def __init__(
         self,
@@ -248,8 +257,8 @@ class SignalProcessor:
     def generate_sweep(self, is_subwoofer: bool = False) -> np.ndarray:
         """Generate sweep with frequency range and amplitude appropriate for the channel type.
 
-        Subwoofers: 15 Hz → 250 Hz  (full sub-bass capture without wasting sweep energy on highs)
-        Speakers:   20 Hz → 30 kHz  (full range, matches UMIK-1/measurement mic capabilities)
+        Subwoofers: 15 Hz → 250 Hz  (sub-bass room modes only, no HF energy wasted)
+        Speakers:   20 Hz → 20 kHz  (within UMIK-1 calibrated range, full hearing band)
         """
         amp = self.amplitude_dbfs_lfe if is_subwoofer else self.amplitude_dbfs
         start_hz = self.SUB_START_HZ if is_subwoofer else self.SPEAKER_START_HZ
