@@ -238,7 +238,12 @@ class MeasurementOrchestrator:
         position_index: int = 0,
     ) -> MeasurementResult:
         """Measure a single channel: play sweep → capture → deconvolve → export."""
-        result = MeasurementResult(channel_id=channel.channel_id)
+        result = MeasurementResult(
+            channel_id=channel.channel_id,
+            ir=np.array([]),
+            frequency_hz=np.array([]),
+            spl_db=np.array([]),
+        )
 
         try:
             self._report_progress(f"Generating sweep for {channel.channel_id}...", 0.0)
