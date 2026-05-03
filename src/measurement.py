@@ -501,14 +501,28 @@ if __name__ == "__main__":
 
     # Interactive device selection
     print("\n=== Device Configuration ===")
-    pb, cap = orch.engine.interactive_pick_devices()
+    pb, cap, num_subwoofers = orch.engine.interactive_pick_devices()
     orch.engine.set_playback_device(pb)
     orch.engine.set_capture_device(cap)
     orch.engine.set_sample_rate(config.sample_rate)
     orch.engine.set_buffer_size(config.buffer_size)
 
-    print("\nDevices configured successfully")
-    print(f"  Playback: {orch.engine.playback_device}")
-    print(f"  Capture:  {orch.engine.capture_device}")
+    # Build channel list from detected playback device layout
+    ch_list = orch.engine.build_channel_list_for_device(pb, num_subwoofers=num_subwoofers)
+    config.channels = [
+        ChannelConfig(
+            channel_id=label,
+            is_subwoofer=is_sub,
+            speaker_distance_m=3.0,
+        )
+        for label, _, is_sub in ch_list
+    ]
+    config.num_subwoofers = num_subwoofers
+
+    print("\nChannels to measure:")
+    for ch in config.channels:
+        sub_tag = " (subwoofer)" if ch.is_subwoofer else ""
+        print(f"  {ch.channel_id}{sub_tag}")
+
     results = orch.run()
     print(f"\nMeasurement complete! {len(results)} channels measured.")

@@ -84,6 +84,14 @@ class AudioEngine:
         """Find UMIK-1 USB measurement mic by name pattern."""
         return self.find_device_by_name("umik") or self.find_device_by_name("usb audio")
 
+    def query_device_info(self, device_id: int) -> dict:
+        """Return full info dict for a device via sounddevice."""
+        return sd.query_devices(device_id)
+
+    def get_playback_channel_count(self, device: AudioDevice) -> int:
+        """Return max output channels for a device."""
+        return device.max_output_channels
+
     def auto_pick_single_mic(self) -> Optional[AudioDevice]:
         """Return mic if exactly one capture device exists, otherwise None."""
         caps = self.list_capture_devices()
@@ -97,7 +105,7 @@ class AudioEngine:
         pbs = self.list_playback_devices()
         return pbs[0] if pbs else None
 
-    def interactive_pick_devices(self) -> tuple[AudioDevice, AudioDevice]:
+    def interactive_pick_devices(self) -> tuple[AudioDevice, AudioDevice, int]:
         """Interactive device picker: playback first, then capture.
 
         Auto-selects capture if only one mic available.
@@ -112,7 +120,11 @@ class AudioEngine:
 
         print("\n=== Capture Devices ===")
         caps = self.list_capture_devices()
-        default_cap = self.auto_pick_single_mic()
+        # Prefer UMIK or any professional/calibration mic as default
+        default_cap = next(
+            (d for d in caps if any(k in d.name.lower() for k in ["umik", "cal", "calibration", "measurement", "mic"])),
+            self.auto_pick_single_mic(),
+        )
         for dev in caps:
             marker = " (auto-selected — only mic)" if default_cap and dev.id == default_cap.id else ""
             print(f"  [{dev.id}] {dev.name} ({dev.max_input_channels}ch){marker}")
@@ -133,7 +145,72 @@ class AudioEngine:
             if not cap:
                 raise RuntimeError("No capture device selected")
 
-        return pb, cap
+        # Show detected layout for selected playback device
+        ch_list = self.build_channel_list_for_device(pb, num_subwoofers=0)
+        layout_channels = [c for c, _, is_sub in ch_list if not is_sub]
+        layout_subs = [c for c, _, is_sub in ch_list if is_sub]
+        print(f"  Detected layout ({pb.max_output_channels}ch): {layout_channels}")
+        if layout_subs:
+            print(f"  Subwoofer channel(s): {layout_subs}")
+
+        # Subwoofer config if LFE channel exists
+        num_sub = 0
+        if layout_subs:
+            num_sub_str = input(f"Number of subwoofers to measure [1]: ").strip()
+            num_sub = int(num_sub_str) if num_sub_str else 1
+            num_sub = min(num_sub, len(layout_subs))
+
+        return pb, cap, num_sub
+
+    def build_channel_list_for_device(
+        self,
+        device: AudioDevice,
+        num_subwoofers: int = 0,
+    ) -> list[tuple[str, int, bool]]:
+        """Map a device channel count to (channel_id, hdmi_index, is_subwoofer) tuples."""
+        n = device.max_output_channels
+        layout_map = {
+            2:  [("FL", 0, False), ("FR", 1, False)],
+            6:  [("FL", 0, False), ("C", 1, False), ("FR", 2, False),
+                 ("BL", 3, False), ("BR", 4, False), ("LFE", 5, True)],
+            8:  [("FL", 0, False), ("C", 1, False), ("FR", 2, False),
+                 ("BL", 3, False), ("BR", 4, False),
+                 ("SL", 5, False), ("SR", 6, False), ("LFE", 7, True)],
+            10: [("FL", 0, False), ("C", 1, False), ("FR", 2, False),
+                 ("FHL", 3, False), ("FHR", 4, False),
+                 ("BL", 5, False), ("BR", 6, False),
+                 ("SL", 7, False), ("SR", 8, False), ("LFE", 9, True)],
+            12: [("FL", 0, False), ("C", 1, False), ("FR", 2, False),
+                 ("SRL", 3, False), ("SRR", 4, False),
+                 ("RL", 5, False), ("RR", 6, False),
+                 ("FTL", 7, False), ("FTR", 8, False),
+                 ("TFL", 9, False), ("TFR", 10, False), ("LFE", 11, True)],
+            14: [("FL", 0, False), ("C", 1, False), ("FR", 2, False),
+                 ("SRL", 3, False), ("SRR", 4, False),
+                 ("RL", 5, False), ("RR", 6, False),
+                 ("FTL", 7, False), ("FTR", 8, False),
+                 ("TFL", 9, False), ("TFR", 10, False),
+                 ("SW1", 11, True), ("SW2", 12, True), ("LFE", 13, False)],
+        }
+        if n not in layout_map:
+            channels = []
+            for i in range(n):
+                if i == 0:
+                    channels.append(("FL", i, False))
+                elif i == 1:
+                    channels.append(("FR", i, False))
+                elif i == n - 1:
+                    channels.append(("LFE", i, True))
+                else:
+                    channels.append((f"CH{i}", i, False))
+            return channels
+        channels = layout_map[n]
+        non_sub = [(c, idx, is_sub) for c, idx, is_sub in channels if not is_sub]
+        subs = [(c, idx, is_sub) for c, idx, is_sub in channels if is_sub]
+        if num_subwoofers > 0:
+            included_subs = subs[:num_subwoofers]
+            return non_sub + included_subs
+        return non_sub + subs
 
     def find_hdmi_audio(self) -> Optional[AudioDevice]:
         """Find HDMI audio output (AVR or GPU HDMI audio)."""
