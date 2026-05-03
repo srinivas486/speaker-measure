@@ -84,6 +84,57 @@ class AudioEngine:
         """Find UMIK-1 USB measurement mic by name pattern."""
         return self.find_device_by_name("umik") or self.find_device_by_name("usb audio")
 
+    def auto_pick_single_mic(self) -> Optional[AudioDevice]:
+        """Return mic if exactly one capture device exists, otherwise None."""
+        caps = self.list_capture_devices()
+        return caps[0] if len(caps) == 1 else None
+
+    def auto_pick_hdmi_or_first_playback(self) -> Optional[AudioDevice]:
+        """Return HDMI device if found, otherwise first playback device."""
+        hdmi = self.find_hdmi_audio()
+        if hdmi:
+            return hdmi
+        pbs = self.list_playback_devices()
+        return pbs[0] if pbs else None
+
+    def interactive_pick_devices(self) -> tuple[AudioDevice, AudioDevice]:
+        """Interactive device picker: playback first, then capture.
+
+        Auto-selects capture if only one mic available.
+        Auto-selects HDMI (or first playback) as default.
+        """
+        print("\n=== Playback Devices ===")
+        pbs = self.list_playback_devices()
+        default_pb = self.auto_pick_hdmi_or_first_playback()
+        for dev in pbs:
+            marker = " (default)" if default_pb and dev.id == default_pb.id else ""
+            print(f"  [{dev.id}] {dev.name} ({dev.max_output_channels}ch){marker}")
+
+        print("\n=== Capture Devices ===")
+        caps = self.list_capture_devices()
+        default_cap = self.auto_pick_single_mic()
+        for dev in caps:
+            marker = " (auto-selected — only mic)" if default_cap and dev.id == default_cap.id else ""
+            print(f"  [{dev.id}] {dev.name} ({dev.max_input_channels}ch){marker}")
+
+        # Playback: default to HDMI/first
+        pb_id = input(f"Playback device [{default_pb.id} if default, Enter to confirm]: ").strip()
+        pb_id = int(pb_id) if pb_id else (default_pb.id if default_pb else None)
+        pb = next((d for d in self.list_devices() if d.id == pb_id), default_pb)
+
+        # Capture: default to single mic, or ask
+        if default_cap:
+            cap = default_cap
+            print(f"Capture device auto-selected: {cap.name}")
+        else:
+            cap_id_str = input("Capture device (id): ").strip()
+            cap_id = int(cap_id_str) if cap_id_str else None
+            cap = next((d for d in self.list_devices() if d.id == cap_id), None)
+            if not cap:
+                raise RuntimeError("No capture device selected")
+
+        return pb, cap
+
     def find_hdmi_audio(self) -> Optional[AudioDevice]:
         """Find HDMI audio output (AVR or GPU HDMI audio)."""
         candidates = []

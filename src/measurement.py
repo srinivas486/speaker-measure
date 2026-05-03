@@ -480,11 +480,16 @@ if __name__ == "__main__":
 
     orch = MeasurementOrchestrator(config)
 
-    if orch.auto_configure_devices():
-        print("Devices configured successfully")
-        print(f"  Playback: {orch.engine.playback_device}")
-        print(f"  Capture:  {orch.engine.capture_device}")
-        results = orch.run()
-        print(f"\nMeasurement complete! {len(results)} channels measured.")
-    else:
-        print("Device auto-config failed — check device connections")
+    # Interactive device selection
+    print("\n=== Device Configuration ===")
+    pb, cap = orch.engine.interactive_pick_devices()
+    orch.engine.set_playback_device(pb)
+    orch.engine.set_capture_device(cap)
+    orch.engine.set_sample_rate(config.sample_rate)
+    orch.engine.set_buffer_size(config.buffer_size)
+
+    print("\nDevices configured successfully")
+    print(f"  Playback: {orch.engine.playback_device}")
+    print(f"  Capture:  {orch.engine.capture_device}")
+    results = orch.run()
+    print(f"\nMeasurement complete! {len(results)} channels measured.")
