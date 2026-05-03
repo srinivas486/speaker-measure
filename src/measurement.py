@@ -258,7 +258,7 @@ class MeasurementOrchestrator:
             # we run them simultaneously via threaded non-blocking calls.
             import threading
 
-            recorded = np.zeros((num_frames, 1), dtype=np.float32)
+            frames = int(self.config.sweep_duration_sec * self.config.sample_rate)
             playback_done = threading.Event()
             capture_done = threading.Event()
 
@@ -268,11 +268,17 @@ class MeasurementOrchestrator:
                 playback_done.set()
 
             def rec_fn():
-                sd.rec(recorded, device=self.engine.capture_device.id,
-                      samplerate=self.config.sample_rate, channels=1,
-                      dtype=np.float32, blocking=True)
+                recorded[:] = sd.rec(
+                    frames=frames,
+                    device=self.engine.capture_device.id,
+                    samplerate=self.config.sample_rate,
+                    channels=1,
+                    dtype=np.float32,
+                    blocking=True,
+                )
                 capture_done.set()
 
+            recorded = np.zeros((frames, 1), dtype=np.float32)
             rec_thread = threading.Thread(target=rec_fn)
             rec_thread.start()
             play_thread = threading.Thread(target=play_fn)
