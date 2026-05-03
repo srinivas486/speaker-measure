@@ -449,7 +449,15 @@ class MeasurementOrchestrator:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Example usage with subwoofer switching
+    def demo_switch_callback(target: int, all_subs: list[int]) -> None:
+        others = [s for s in all_subs if s != target]
+        print(f"\n{'='*50}")
+        print(f"🔌 SWITCH SUBWOOFERS BEFORE MEASURING")
+        print(f"   ➤ Switch ON:  Subwoofer {target}")
+        print(f"   ➤ Switch OFF: {others}")
+        print(f"{'='*50}")
+        input("   Press ENTER after switching subwoofers...")
+
     config = MeasurementConfig(
         channels=[
             ChannelConfig(channel_id="fl", speaker_distance_m=3.2),
@@ -463,24 +471,15 @@ if __name__ == "__main__":
         mic_positions=1,
         pause_for_subwoofer_switch=True,
     )
+    config.subwoofer_switch_callback = demo_switch_callback
 
     orch = MeasurementOrchestrator(config)
-
-    # Example switch callback (replace with actual UI implementation)
-    def demo_switch_callback(target: int, all_subs: list[int]) -> None:
-        others = [s for s in all_subs if s != target]
-        print(f"\n{'='*50}")
-        print(f"🔌 SWITCH SUBWOOFERS BEFORE MEASURING")
-        print(f"   ➤ Switch ON:  Subwoofer {target}")
-        print(f"   ➤ Switch OFF: {others}")
-        print(f"{'='*50}")
-        input("   Press ENTER after switching subwoofers...")
-
-    config.subwoofer_switch_callback = demo_switch_callback
 
     if orch.auto_configure_devices():
         print("Devices configured successfully")
         print(f"  Playback: {orch.engine.playback_device}")
         print(f"  Capture:  {orch.engine.capture_device}")
+        results = orch.run()
+        print(f"\nMeasurement complete! {len(results)} channels measured.")
     else:
         print("Device auto-config failed — check device connections")
