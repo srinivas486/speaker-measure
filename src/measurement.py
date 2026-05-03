@@ -249,26 +249,22 @@ class MeasurementOrchestrator:
             self._report_progress(f"Generating sweep for {channel.channel_id}...", 0.0)
             sweep = self.processor.generate_sweep()
 
-            # Open stream for simultaneous play+rec
-            stream = self.engine.open_stream(channels_playback=2, channels_capture=1)
-            try:
-                self._report_progress(f"Playing sweep on {channel.channel_id}...", 0.1)
+            self._report_progress(f"Playing sweep on {channel.channel_id}...", 0.1)
 
-                num_frames = len(sweep)
-                recorded = sd.playrec(
-                    sweep,
-                    samplerate=self.config.sample_rate,
-                    device=(
-                        self.engine.playback_device.id,
-                        self.engine.capture_device.id,
-                    ),
-                    dtype="float32",
-                    blocking=True,
-                )
-                self._report_progress(f"Sweep complete, processing...", 0.6)
-
-            finally:
-                self.engine.close_stream()
+            num_frames = len(sweep)
+            # sd.playrec handles playback+capture in one call — no separate stream needed.
+            # sounddevice validates channel count directly against device capabilities.
+            recorded = sd.playrec(
+                sweep,
+                samplerate=self.config.sample_rate,
+                device=(
+                    self.engine.playback_device.id,
+                    self.engine.capture_device.id,
+                ),
+                dtype="float32",
+                blocking=True,
+            )
+            self._report_progress(f"Sweep complete, processing...", 0.6)
 
             ir = self.processor.measure_impulse_response(
                 captured_mic=recorded,
