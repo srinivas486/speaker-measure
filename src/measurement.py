@@ -252,19 +252,35 @@ class MeasurementOrchestrator:
             self._report_progress(f"Playing sweep on {channel.channel_id}...", 0.1)
 
             num_frames = len(sweep)
-            # sd.playrec handles playback+capture in one call — no separate stream needed.
-            # sounddevice validates channel count directly against device capabilities.
-            recorded = sd.playrec(
-                sweep,
-                samplerate=self.config.sample_rate,
-                device=(
-                    self.engine.playback_device.id,
-                    self.engine.capture_device.id,
-                ),
-                channels=2,
-                dtype="float32",
-                blocking=True,
-            )
+            # Use sd.play + sd.rec in parallel threads.
+            # sd.playrec only works when both devices are on the same sound card.
+            # For two separate devices (HDMI/AVR for playback, UMIK-1 USB for capture),
+            # we run them simultaneously via threaded non-blocking calls.
+            import threading
+
+            recorded = np.zeros((num_frames, 1), dtype=np.float32)
+            playback_done = threading.Event()
+            capture_done = threading.Event()
+
+            def play_fn():
+                sd.play(sweep, device=self.engine.playback_device.id,
+                       samplerate=self.config.sample_rate, blocking=True)
+                playback_done.set()
+
+            def rec_fn():
+                sd.rec(recorded, device=self.engine.capture_device.id,
+                      samplerate=self.config.sample_rate, channels=1,
+                      dtype=np.float32, blocking=True)
+                capture_done.set()
+
+            rec_thread = threading.Thread(target=rec_fn)
+            rec_thread.start()
+            play_thread = threading.Thread(target=play_fn)
+            play_thread.start()
+            play_thread.join()
+            capture_done.wait()   # wait for rec to finish too
+            rec_thread.join()
+
             self._report_progress(f"Sweep complete, processing...", 0.6)
 
             ir = self.processor.measure_impulse_response(
