@@ -57,6 +57,8 @@ class MeasurementConfig:
     sweep_start_hz: float = 20.0
     sweep_end_hz: float = 20000.0
     sweep_amplitude_dbfs: float = -12.0
+    sweep_amplitude_dbfs_lfe: float = -30.0  # much lower for LFE to avoid overdriving subwoofer
+    suggested_avr_volume_db: float = -15.0   # master volume suggestion for safe SPL
     sample_rate: int = 48000
     buffer_size: int = 1024
     mic_calibration_path: Optional[str | Path] = None
@@ -86,7 +88,11 @@ class MeasurementOrchestrator:
     def __init__(self, config: MeasurementConfig):
         self.config = config
         self.engine = AudioEngine()
-        self.processor = SignalProcessor(sample_rate=config.sample_rate)
+        self.processor = SignalProcessor(
+            sample_rate=config.sample_rate,
+            amplitude_dbfs=config.sweep_amplitude_dbfs,
+            amplitude_dbfs_lfe=config.sweep_amplitude_dbfs_lfe,
+        )
         self.calibration = MicCalibration()
         self.exporter = WavExporter(config.output_dir)
         self.results_summary = ResultsSummary()
@@ -247,7 +253,7 @@ class MeasurementOrchestrator:
 
         try:
             self._report_progress(f"Generating sweep for {channel.channel_id}...", 0.0)
-            sweep = self.processor.generate_sweep()
+            sweep = self.processor.generate_sweep(is_subwoofer=channel.is_subwoofer)
 
             self._report_progress(f"Playing sweep on {channel.channel_id}...", 0.1)
 

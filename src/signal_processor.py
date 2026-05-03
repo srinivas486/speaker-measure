@@ -224,10 +224,38 @@ class Deconvolver:
 class SignalProcessor:
     """High-level signal processor coordinating sweep generation and deconvolution."""
 
-    def __init__(self, sample_rate: int = 48000):
+    def __init__(
+        self,
+        sample_rate: int = 48000,
+        amplitude_dbfs: float = -12.0,
+        amplitude_dbfs_lfe: float = -30.0,
+    ):
         self.sample_rate = sample_rate
-        self.sweep_gen = SweepGenerator(sample_rate=sample_rate)
+        self.amplitude_dbfs = amplitude_dbfs
+        self.amplitude_dbfs_lfe = amplitude_dbfs_lfe
+        self.sweep_gen = SweepGenerator(
+            sample_rate=sample_rate,
+            amplitude_dbfs=amplitude_dbfs,
+        )
         self.deconvolver = Deconvolver(sample_rate=sample_rate)
+
+    def generate_sweep(self, is_subwoofer: bool = False) -> np.ndarray:
+        """Generate sweep with amplitude appropriate for the channel type.
+
+        Subwoofers get a much lower amplitude sweep to avoid overdriving the driver.
+        """
+        amp = self.amplitude_dbfs_lfe if is_subwoofer else self.amplitude_dbfs
+        # Only recreate SweepGenerator if amplitude changed
+        if not hasattr(self, '_sweep_gen') or self._sweep_gen.amplitude_dbfs != amp:
+            self._sweep_gen = SweepGenerator(sample_rate=self.sample_rate, amplitude_dbfs=amp)
+            self._inv_filter = None  # reset cached inverse filter
+        return self._sweep_gen.generate()
+
+    def get_inverse_filter(self) -> np.ndarray:
+        """Get the inverse filter for the current sweep (cached)."""
+        if not hasattr(self, '_inv_filter') or self._inv_filter is None:
+            self._inv_filter = self._sweep_gen.get_inverse_filter()
+        return self._inv_filter
 
     def generate_sweep(self) -> np.ndarray:
         return self.sweep_gen.generate()
@@ -238,8 +266,8 @@ class SignalProcessor:
         window_ms: float = 50.0,
         fade_ms: float = 5.0,
     ) -> np.ndarray:
-        sweep = self.sweep_gen.get_inverse_filter()
-        return self.deconvolver.deconvolve(captured_mic, sweep, window_ms, fade_ms)
+        inv = self.get_inverse_filter()
+        return self.deconvolver.deconvolve(captured_mic, inv, window_ms, fade_ms)
 
     def get_frequency_response(self, ir: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return self.deconvolver.extract_frequency_response(ir)
