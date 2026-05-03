@@ -54,7 +54,7 @@ class MeasurementResult:
 class MeasurementConfig:
     """Global configuration for a measurement run."""
     channels: list[ChannelConfig] = field(default_factory=list)
-    sweep_duration_sec: float = 3.0
+    sweep_duration_sec: float = 6.0  # longer sweep for better low-freq resolution
     sweep_start_hz: float = 20.0
     sweep_end_hz: float = 20000.0
     sweep_amplitude_dbfs: float = -12.0
@@ -70,9 +70,7 @@ class MeasurementConfig:
     num_subwoofers: int = 0  # number of subwoofers to measure (e.g. 2 or 4).
                               # If 0, auto-detected from HDMI. If HDMI reports fewer,
                               # only measure that many.
-    mic_calibration_path: Optional[str | Path] = None
-    mic_positions: int = 1   # number of mic positions for spatial averaging
-    sweep_duration_sec: float = 6.0  # longer sweep for better low-freq resolution
+    use_sss: bool = False    # use Synchronized Swept Sine method (Novák 2015) for cleaner IR
 
 
 class MeasurementOrchestrator:
@@ -96,6 +94,7 @@ class MeasurementOrchestrator:
             sample_rate=config.sample_rate,
             amplitude_dbfs=config.sweep_amplitude_dbfs,
             amplitude_dbfs_lfe=config.sweep_amplitude_dbfs_lfe,
+            use_sss=config.use_sss,
         )
         self.calibration = MicCalibration()
         self.exporter = WavExporter(config.output_dir)
@@ -545,6 +544,14 @@ if __name__ == "__main__":
         config.pause_for_subwoofer_switch = True
     else:
         config.pause_for_subwoofer_switch = False
+
+    # ── SSS mode prompt ──────────────────────────────────────────────
+    sss_str = input("\nUse Synchronized Swept Sine method (SSS) for cleaner IR? [Y/n]: ").strip().lower()
+    config.use_sss = sss_str != "n"
+    if config.use_sss:
+        print("  SSS mode enabled — distortion-corrected linear IR, best for Acourate FIR")
+    else:
+        print("  Standard exponential sweep mode selected")
 
     # ── Multi-position option ─────────────────────────────────────────
     num_positions_str = input(f"\nNumber of mic positions to measure [1]: ").strip()

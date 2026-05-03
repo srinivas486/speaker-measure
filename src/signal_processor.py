@@ -244,36 +244,58 @@ class SignalProcessor:
         sample_rate: int = 48000,
         amplitude_dbfs: float = -12.0,
         amplitude_dbfs_lfe: float = -30.0,
+        use_sss: bool = False,
     ):
         self.sample_rate = sample_rate
         self.amplitude_dbfs = amplitude_dbfs
         self.amplitude_dbfs_lfe = amplitude_dbfs_lfe
+        self.use_sss = use_sss
         self.sweep_gen = SweepGenerator(
             sample_rate=sample_rate,
             amplitude_dbfs=amplitude_dbfs,
         )
         self.deconvolver = Deconvolver(sample_rate=sample_rate)
+        # SSS sweep objects (created on demand per channel)
+        self._sss_gen: Optional[SyncSweepGenerator] = None
+        self._sss_dec: Optional[SSSDeconvolver] = None
 
     def generate_sweep(self, is_subwoofer: bool = False) -> np.ndarray:
         """Generate sweep with frequency range and amplitude appropriate for the channel type.
 
         Subwoofers: 15 Hz → 250 Hz  (sub-bass room modes only, no HF energy wasted)
         Speakers:   20 Hz → 20 kHz  (within UMIK-1 calibrated range, full hearing band)
+
+        When use_sss=True, generates a Synchronized Swept Sine (SSS) signal
+        (Novák et al. 2015) instead of a standard exponential sweep.
         """
         amp = self.amplitude_dbfs_lfe if is_subwoofer else self.amplitude_dbfs
         start_hz = self.SUB_START_HZ if is_subwoofer else self.SPEAKER_START_HZ
         end_hz = self.SUB_END_HZ if is_subwoofer else self.SPEAKER_END_HZ
 
-        # Only recreate SweepGenerator if amplitude or frequency range changed
-        key = (amp, start_hz, end_hz)
-        if not hasattr(self, '_sweep_gen') or self._sweep_gen.amplitude_dbfs != amp:
+        if self.use_sss:
+            # Synchronized Swept Sine — only need one sweep, no reversed sweep needed
+            # The analytical inverse spectrum handles separation of H1 from H2/H3 etc.
+            self._sss_gen = SyncSweepGenerator(
+                start_freq_hz=start_hz,
+                end_freq_hz=end_hz,
+                duration_sec=6.0,
+                sample_rate=self.sample_rate,
+                amplitude_dbfs=amp,
+            )
+            return self._sss_gen.generate()
+
+        # Standard exponential sweep
+        if (not hasattr(self, '_sweep_gen')
+                or self._sweep_gen.amplitude_dbfs != amp
+                or self._sweep_gen.start_hz != start_hz
+                or self._sweep_gen.end_hz != end_hz):
             self._sweep_gen = SweepGenerator(
                 sample_rate=self.sample_rate,
                 amplitude_dbfs=amp,
                 start_hz=start_hz,
                 end_hz=end_hz,
             )
-            self._inv_filter = None  # reset cached inverse filter
+            self._inv_filter = None
         return self._sweep_gen.generate()
 
     def get_inverse_filter(self) -> np.ndarray:
@@ -282,15 +304,36 @@ class SignalProcessor:
             self._inv_filter = self._sweep_gen.get_inverse_filter()
         return self._inv_filter
 
-    def generate_sweep(self) -> np.ndarray:
-        return self.sweep_gen.generate()
-
     def measure_impulse_response(
         self,
         captured_mic: np.ndarray,
         window_ms: float = 50.0,
         fade_ms: float = 5.0,
+        fade_samples: int = 2048,
     ) -> np.ndarray:
+        if self.use_sss and self._sss_gen is not None:
+            # SSS deconvolution — uses analytical inverse spectrum
+            fft_len = len(self._sss_gen.generate())
+            self._sss_dec = SSSDeconvolver(
+                sample_rate=self.sample_rate,
+                sweep_period=self._sss_gen.sweep_period,
+                start_freq_hz=self._sss_gen.start_freq_hz,
+                fft_length=fft_len,
+                fade_samples=fade_samples,
+            )
+            ir = self._sss_dec.get_linear_ir(captured_mic, fade_samples=fade_samples)
+            # Apply time-gating window if requested
+            if window_ms > 0:
+                window_samples = int(window_ms * self.sample_rate / 1000)
+                if fade_ms > 0:
+                    fade_s = int(fade_ms * self.sample_rate / 1000)
+                    ir[window_samples:] = 0
+                    if fade_s < window_samples:
+                        win = 0.5 * (1.0 - np.cos(np.pi * np.arange(fade_s) / fade_s))
+                        ir[window_samples - fade_s:window_samples] *= win
+                else:
+                    ir[window_samples:] = 0
+            return ir
         inv = self.get_inverse_filter()
         return self.deconvolver.deconvolve(captured_mic, inv, window_ms, fade_ms)
 
