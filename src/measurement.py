@@ -262,40 +262,56 @@ class MeasurementOrchestrator:
             self._report_progress(f"Playing sweep on {channel.channel_id}...", 0.1)
 
             num_frames = len(sweep)
-            # Use sd.play + sd.rec in parallel threads.
-            # sd.playrec only works when both devices are on the same sound card.
-            # For two separate devices (HDMI/AVR for playback, UMIK-1 USB for capture),
-            # we run them simultaneously via threaded non-blocking calls.
+            # sd.Lock serialises access to the same device across threads.
+            # We lock the capture device (UMIK-1) so play+rec don't race,
+            # and add a per-channel device flush between measurements so
+            # PaErrorCode -9985 (Device unavailable) doesn't recur.
             import threading
 
             frames = int(self.config.sweep_duration_sec * self.config.sample_rate)
             playback_done = threading.Event()
             capture_done = threading.Event()
+            capture_lock = sd.Lock(device=self.engine.capture_device.id)
 
             def play_fn():
-                sd.play(sweep, device=self.engine.playback_device.id,
-                       samplerate=self.config.sample_rate, blocking=True)
-                playback_done.set()
+                try:
+                    sd.play(sweep, device=self.engine.playback_device.id,
+                           samplerate=self.config.sample_rate, blocking=True)
+                finally:
+                    playback_done.set()
 
             def rec_fn():
-                recorded[:] = sd.rec(
-                    frames=frames,
-                    device=self.engine.capture_device.id,
-                    samplerate=self.config.sample_rate,
-                    channels=1,
-                    dtype=np.float32,
-                    blocking=True,
-                )
-                capture_done.set()
+                try:
+                    with capture_lock:
+                        recorded[:] = sd.rec(
+                            frames=frames,
+                            device=self.engine.capture_device.id,
+                            samplerate=self.config.sample_rate,
+                            channels=1,
+                            dtype=np.float32,
+                            blocking=True,
+                        )
+                finally:
+                    capture_done.set()
 
             recorded = np.zeros((frames, 1), dtype=np.float32)
-            rec_thread = threading.Thread(target=rec_fn)
+            rec_thread = threading.Thread(target=rec_fn, name=f"rec-{channel.channel_id}")
+            play_thread = threading.Thread(target=play_fn, name=f"play-{channel.channel_id}")
             rec_thread.start()
-            play_thread = threading.Thread(target=play_fn)
             play_thread.start()
             play_thread.join()
             capture_done.wait()   # wait for rec to finish too
             rec_thread.join()
+
+            # Flush both devices so next measurement starts clean.
+            try:
+                sd.flush(device=self.engine.playback_device.id)
+            except Exception:
+                pass
+            try:
+                sd.flush(device=self.engine.capture_device.id)
+            except Exception:
+                pass
 
             self._report_progress(f"Sweep complete, processing...", 0.6)
 
