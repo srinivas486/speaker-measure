@@ -271,7 +271,7 @@ class MeasurementOrchestrator:
             frames = int(self.config.sweep_duration_sec * self.config.sample_rate)
             playback_done = threading.Event()
             capture_done = threading.Event()
-            capture_lock = sd.Lock(device=self.engine.capture_device.id)
+            capture_lock = threading.Lock()  # serialise capture device access
 
             def play_fn():
                 try:
