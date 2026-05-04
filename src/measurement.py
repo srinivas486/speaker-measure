@@ -512,6 +512,14 @@ if __name__ == "__main__":
 
     orch = MeasurementOrchestrator(config)
 
+    # ── Timestamped output folder ──────────────────────────────────────
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts_folder = Path(config.output_dir) / ts
+    ts_folder.mkdir(parents=True, exist_ok=True)
+    orch._output_dir = ts_folder
+    print(f"  Output folder: {orch._output_dir}")
+
     # ── Device selection ───────────────────────────────────────────────
     print("\n=== Device Configuration ===")
     pb, cap, num_subwoofers = orch.engine.interactive_pick_devices()

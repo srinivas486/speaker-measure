@@ -16,11 +16,14 @@ class WavExporter:
     """Exports impulse responses and measurement results as REW-compatible WAV files.
 
     Files are written as:
-        48 kHz, 24-bit PCM, stereo (even for mono signals — stereo format expected by REW)
+        48 kHz, 24-bit PCM, mono (L=R identical if stereo is enabled)
 
     Naming convention:
         {channel_id}_{timestamp}.wav
         e.g. fl_20260501_133045.wav, sw1_20260501_133102.wav
+    
+    Stereo mode disabled by default — REW can import mono WAV files directly
+    without incorrectly reading two identical channels as separate measurements.
     """
 
     EXPORT_SAMPLE_RATE = 48000
@@ -40,10 +43,10 @@ class WavExporter:
         ir: np.ndarray,
         channel_id: str,
         sample_rate: int = 48000,
-        is_stereo: bool = True,
+        is_stereo: bool = False,
         output_dir: Optional[Path] = None,
     ) -> Path:
-        """Export impulse response as 48 kHz stereo WAV file.
+        """Export impulse response as 48 kHz mono WAV file.
 
         Args:
             ir: Impulse response, mono (N,) or stereo (N, 2)
