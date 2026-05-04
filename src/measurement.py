@@ -276,7 +276,9 @@ class MeasurementOrchestrator:
             def play_fn():
                 try:
                     sd.play(sweep, device=self.engine.playback_device.id,
-                           samplerate=self.config.sample_rate, blocking=True)
+                           samplerate=self.config.sample_rate,
+                           channels=self.engine.playback_device.max_output_channels,
+                           blocking=True)
                 finally:
                     playback_done.set()
 

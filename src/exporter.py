@@ -62,11 +62,12 @@ class WavExporter:
         filename = f"{channel_id.lower()}.wav"
         out_path = out_dir / filename
 
-        # Ensure stereo (required by REW)
-        if ir.ndim == 1:
-            ir = np.stack([ir, ir], axis=1)
-        elif ir.ndim == 2 and ir.shape[1] == 1:
-            ir = np.repeat(ir, 2, axis=1)
+        # Apply stereo if requested (REW accepts mono WAVs directly)
+        if is_stereo:
+            if ir.ndim == 1:
+                ir = np.stack([ir, ir], axis=1)
+            elif ir.ndim == 2 and ir.shape[1] == 1:
+                ir = np.repeat(ir, 2, axis=1)
 
         sf.write(
             str(out_path),
