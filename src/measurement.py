@@ -99,6 +99,7 @@ class MeasurementOrchestrator:
         self.calibration = MicCalibration()
         self.exporter = WavExporter(config.output_dir)
         self.results_summary = ResultsSummary()
+        self._output_dir = Path(config.output_dir)
         self._progress_callback: Optional[Callable[[str, float], None]] = None
         self._cancelled = False
         self._subwoofer_indices: list[int] = []  # e.g. [1, 2] for 2-sub setup
