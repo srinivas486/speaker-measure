@@ -562,11 +562,14 @@ if __name__ == "__main__":
         cal_path = cal_prompt
 
     if cal_path and os.path.exists(cal_path):
+        # Detect UMIK-1 serial from cal filename for Full Scale SPL lookup
+        import os as _os
+        _serial = _os.path.basename(cal_path).split('_')[0] if cal_path else ''
         config.mic_calibration_path = cal_path
         orch.calibration.load_file(cal_path)
         sf = orch.calibration.sens_factor
         print(f"  Calibration loaded: {cal_path}")
-        print(f"  Sens Factor (base mic sensitivity): {sf:.3f} dB re 1V/Pa")
+        print(f"  Full Scale SPL: {sf:.2f} dB")
         print(f"  Cal offsets: {orch.calibration.frequency_range[0]:.0f}–"
               f"{orch.calibration.frequency_range[1]:.0f} Hz")
     else:
@@ -580,8 +583,8 @@ if __name__ == "__main__":
     # or if your acoustic path differs from REW's, you can fine-tune here.
     # Set this to match REW's SPL reading or a calibrated SPL meter at 1 kHz.
     sf_prompt = input(
-        f"\nSens Factor override in dB re 1V/Pa\n"
-        f"  (Press Enter to keep cal file's {orch.calibration.sens_factor:.3f} dB, "
+        f"\nFull Scale SPL override in dB (REW: 94 - dBFS @ 94 = Full Scale SPL)\n"
+        f"  (Press Enter to keep {orch.calibration.sens_factor:.2f} dB, "
         f"or enter a value to fine-tune SPL levels): "
     ).strip()
     if sf_prompt:

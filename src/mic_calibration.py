@@ -18,12 +18,16 @@ class MicCalibration:
       - Optional header line: "Sens Factor =X.XXXdB" — base mic sensitivity in dB re 1V/Pa
       - Data lines: frequency_hz  offset_db (per-frequency corrections)
 
-    The Sens Factor (e.g. -1.135 dB) converts raw FFT magnitude (dBFS) to
-    calibrated dB SPL. The per-frequency offsets then correct the UMIK-1's
-    native response shape (positive = mic under-responds, add to compensate).
+    The Sens Factor is the Full Scale SPL — the SPL reading when the mic
+    receives a 94 dB 1 kHz sine wave and the system records 0 dBFS (full scale).
+    REW measures this during calibration and stores it as "Sens Factor" in the
+    cal file header. For UMIK-1 serial 7150990, this is 122.12 dB.
+
+    The per-frequency offsets correct the UMIK-1's native response shape
+    (positive = mic under-responds at that freq, add to compensate).
 
     Full SPL formula:
-        SPL (dB) = raw_dBFS + Sens_Factor + cal_offsets(freq)
+        SPL (dB) = raw_dBFS + FullScaleSPL + cal_offsets(freq)
 
     Users set their AVR to a known reference level (e.g. -12 dBFS) so that
     measurements at the same volume setting are comparable and calibratable.
@@ -65,7 +69,7 @@ class MicCalibration:
             logger.info(f"Loaded calibration from {path}: "
                         f"{len(self.cal_frequencies)} points, "
                         f"{self.cal_frequencies[0]:.1f} Hz → {self.cal_frequencies[-1]:.1f} Hz, "
-                        f"Sens Factor = {self.sens_factor_db:.3f} dB re 1V/Pa")
+                        f"Full Scale SPL = {self.sens_factor_db:.2f} dB")
             return True
 
         except Exception as e:
@@ -81,17 +85,24 @@ class MicCalibration:
         data = []
         self.sens_factor_db = 0.0  # default: no sensitivity adjustment
 
+        # Known Full Scale SPL values for common UMIK-1 serial numbers.
+        # This is REW's measured "SPL at 94 dB / -28.12 dBFS" calibration value.
+        # Key: serial number (first 7 digits of cal file name), Value: Full Scale SPL in dB.
+        KNOWN_FULLSCALE = {
+            '7150990': 122.12,   # Current UMIK-1 — measured by REW 2024
+            # Add more entries here as you calibrate additional mics
+        }
+
+        # Try to extract serial number from cal filename (e.g. "7150990_90deg.cal")
+        serial = path.stem.split('_')[0] if path.stem else ''
+        self.sens_factor_db = KNOWN_FULLSCALE.get(serial, 122.12)  # default to 122.12
+        logger.info(f"Full Scale SPL: {self.sens_factor_db:.2f} dB "
+                    f"(serial {serial or 'unknown'})")
+
         with open(path) as f:
             for line in f:
                 line = line.strip()
                 if not line:
-                    continue
-                # Check for Sens Factor header line
-                if 'Sens Factor' in line or 'sens' in line.lower():
-                    m = re.search(r'[+-]?\d+\.?\d*', line.split('Sens Factor')[-1])
-                    if m:
-                        self.sens_factor_db = float(m.group())
-                        logger.info(f"Sens Factor from cal file: {self.sens_factor_db:.3f} dB re 1V/Pa")
                     continue
                 # Skip comment lines
                 if line.startswith('#'):
@@ -168,7 +179,10 @@ class MicCalibration:
     def apply(self, frequency_hz: np.ndarray, spl_db: np.ndarray) -> np.ndarray:
         """Apply calibration: convert raw dBFS to calibrated dB SPL.
 
-        Full formula: SPL = raw_dBFS + Sens_Factor + cal_offsets
+        Full formula: SPL = raw_dBFS + FullScaleSPL + cal_offsets(freq)
+
+        FullScaleSPL is the absolute calibration reference (e.g. 122.12 dB for
+        UMIK-1 serial 7150990) — NOT the mic sensitivity from the cal header.
 
         The Sens Factor (from cal file header, e.g. -1.135 dB) handles absolute
         SPL conversion. The per-frequency offsets correct the mic's native
