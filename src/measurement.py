@@ -545,17 +545,56 @@ if __name__ == "__main__":
     orch.engine.set_sample_rate(config.sample_rate)
     orch.engine.set_buffer_size(config.buffer_size)
 
-    # ── Calibration file (optional) ────────────────────────────────────
-    default_cal = os.path.join(os.path.expanduser("~"), "Downloads", "UMIK-1_calibration.txt")
-    cal_path = input(f"\nCalibration file path [press Enter for {default_cal}]: ").strip()
-    if not cal_path:
-        cal_path = default_cal
-    if os.path.exists(cal_path):
+    # ── Calibration file ───────────────────────────────────────────
+    cal_defaults = [
+        "calibrations/7150990_90deg.cal",
+        os.path.join(os.path.expanduser("~"), "Downloads", "UMIK-1_calibration.txt"),
+        "",
+    ]
+    cal_path = None
+    for default in cal_defaults:
+        if default and os.path.exists(default):
+            cal_path = default
+            break
+
+    cal_prompt = input(f"\nCalibration file path [Enter for {cal_path or 'none'}]: ").strip()
+    if cal_prompt:
+        cal_path = cal_prompt
+
+    if cal_path and os.path.exists(cal_path):
         config.mic_calibration_path = cal_path
         orch.calibration.load_file(cal_path)
+        sf = orch.calibration.sens_factor
         print(f"  Calibration loaded: {cal_path}")
+        print(f"  Sens Factor (base mic sensitivity): {sf:.3f} dB re 1V/Pa")
+        print(f"  Cal offsets: {orch.calibration.frequency_range[0]:.0f}–"
+              f"{orch.calibration.frequency_range[1]:.0f} Hz")
     else:
-        print(f"  No calibration file found at '{cal_path}' — measurements will be uncorrected (relative dB)")
+        print(f"  No calibration file — measurements will be uncorrected (relative dB)")
+        print(f"  To fix SPL levels, load a .cal file and set the Sens Factor below")
+        orch.calibration.is_loaded = False
+
+    # ── SPL reference level (Sens Factor override) ──────────────────────
+    # The cal file's Sens Factor handles absolute mic sensitivity.
+    # If your AVR doesn't output exactly -12 dBFS at your reference volume,
+    # or if your acoustic path differs from REW's, you can fine-tune here.
+    # Set this to match REW's SPL reading or a calibrated SPL meter at 1 kHz.
+    sf_prompt = input(
+        f"\nSens Factor override in dB re 1V/Pa\n"
+        f"  (Press Enter to keep cal file's {orch.calibration.sens_factor:.3f} dB, "
+        f"or enter a value to fine-tune SPL levels): "
+    ).strip()
+    if sf_prompt:
+        try:
+            sf_override = float(sf_prompt)
+            orch.calibration.reset_sens_factor(sf_override)
+            print(f"  Sens Factor overridden to: {sf_override:.3f} dB re 1V/Pa")
+        except ValueError:
+            print(f"  Invalid value — keeping cal file Sens Factor")
+
+    # ── AVR reference level reminder ───────────────────────────────────
+    print(f"\n  ℹ  Set your AVR to your reference volume (e.g. -12 dBFS master volume)")
+    print(f"     and use the same level for all measurements to get comparable SPL results.")
 
     # ── Layout from device channel count ───────────────────────────────
     ch_list = orch.engine.build_channel_list_for_device(pb, num_subwoofers=num_subwoofers)
