@@ -1,6 +1,7 @@
 # Audio Engine — Phase 1
 # speaker-measure
 # Handles device enumeration, playback, capture, and loopback recording
+# Supports WASAPI (Windows), ASIO (Windows), and PortAudio (macOS/Linux)
 
 import sounddevice as sd
 import numpy as np
@@ -10,6 +11,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Host API constants (from PortAudio)
+HOSTAPI_MME = 0    # Windows MultiMedia Extensions (legacy)
+HOSTAPI_WASAPI = 3 # Windows Audio Session API (preferred for HDMI/AVR multichannel)
+HOSTAPI_ASIO = 1   # ASIO (hardware-specific, bypasses Windows audio)
+HOSTAPI_WDMKS = 4  # Windows Driver Model (kernel streaming, also good for HDMI)
+
+
 
 class AudioDevice:
     """Wrapper for a sounddevice audio device with useful metadata."""
@@ -18,14 +26,28 @@ class AudioDevice:
         self.id = info["index"]
         self.name = info["name"]
         self.hostapi = info["hostapi"]
+        self.hostapi_name = self._get_hostapi_name(info["hostapi"])
         self.max_input_channels = info.get("max_input_channels", 0)
         self.max_output_channels = info.get("max_output_channels", 0)
         self.default_samplerate = info.get("default_samplerate", 48000)
         self.is_asio = "ASIO" in info["name"]
         self.is_usb = "USB" in info["name"]
+        self.is_wasapi = self.hostapi_name == "Windows WASAPI"
+        self.is_avr = any(k in info["name"].lower() for k in ["hdmi", "avr", "receiver", "denon", "marantz", "yamaha", "onkyo", "pioneer"])
+
+    def _get_hostapi_name(self, hostapi_index: int) -> str:
+        try:
+            return sd.query_hostapis(hostapi_index)["name"]
+        except Exception:
+            return "unknown"
+
+    def supports_wasapi(self) -> bool:
+        """Return True if this device can be used with WASAPI."""
+        return self.is_wasapi and self.max_output_channels >= 2
 
     def __repr__(self):
-        return f"AudioDevice({self.id}, {self.name!r}, in={self.max_input_channels}, out={self.max_output_channels})"
+        api_tag = f" [{self.hostapi_name}]" if self.hostapi_name != "unknown" else ""
+        return f"AudioDevice({self.id}, {self.name!r}{api_tag}, in={self.max_input_channels}, out={self.max_output_channels})"
 
 
 class AudioEngine:
@@ -62,9 +84,19 @@ class AudioEngine:
             infos = [infos]
         return [AudioDevice(info) for info in infos]
 
+    def list_devices_by_hostapi(self, hostapi_name_fragment: str) -> list[AudioDevice]:
+        """Return devices matching a host API (e.g. 'wasapi', 'asio', 'mme'). Case-insensitive."""
+        fragment = hostapi_name_fragment.lower()
+        return [d for d in self.list_devices() if fragment in d.hostapi_name.lower()]
+
     def list_playback_devices(self) -> list[AudioDevice]:
         """Return devices that have output channels."""
         return [d for d in self.list_devices() if d.max_output_channels > 0]
+
+    def list_playback_devices_by_hostapi(self, hostapi_name_fragment: str) -> list[AudioDevice]:
+        """Return output devices matching a host API."""
+        fragment = hostapi_name_fragment.lower()
+        return [d for d in self.list_playback_devices() if fragment in d.hostapi_name.lower()]
 
     def list_capture_devices(self) -> list[AudioDevice]:
         """Return devices that have input channels (e.g. UMIK-1 USB mic)."""
@@ -110,13 +142,15 @@ class AudioEngine:
 
         Auto-selects capture if only one mic available.
         Auto-selects HDMI (or first playback) as default.
+        Shows host API (WASAPI/ASIO/MME) for each device.
         """
         print("\n=== Playback Devices ===")
         pbs = self.list_playback_devices()
         default_pb = self.auto_pick_hdmi_or_first_playback()
         for dev in pbs:
+            api_tag = f" [{dev.hostapi_name}]" if dev.hostapi_name != "unknown" else ""
             marker = " (default)" if default_pb and dev.id == default_pb.id else ""
-            print(f"  [{dev.id}] {dev.name} ({dev.max_output_channels}ch){marker}")
+            print(f"  [{dev.id}] {dev.name} ({dev.max_output_channels}ch){api_tag}{marker}")
 
         print("\n=== Capture Devices ===")
         caps = self.list_capture_devices()
@@ -212,16 +246,100 @@ class AudioEngine:
             return non_sub + included_subs
         return non_sub + subs
 
+    def find_wasapi_hdmi(self) -> Optional[AudioDevice]:
+        """Find HDMI/AVR audio via WASAPI (Windows Audio Session API).
+
+        WASAPI is preferred for multichannel HDMI/AVR because:
+        - Supports exclusive mode for bit-perfect multichannel PCM
+        - Properly exposes all HDMI channel beds (5.1/7.1/Atmos)
+        - Lower latency than MME on Windows
+        - Works with most AVR/receivers via HDMI
+        """
+        candidates = []
+        for dev in self.list_playback_devices():
+            name = dev.name.lower()
+            is_hdmi_avr = any(k in name for k in ["hdmi", "avr", "receiver", "denon", "marantz", "yamaha", "onkyo", "pioneer"])
+            is_wasapi = dev.is_wasapi
+            if is_hdmi_avr and is_wasapi:
+                candidates.append(dev)
+
+        if candidates:
+            logger.info(f"WASAPI HDMI/AVR candidates: {[d.name for d in candidates]}")
+            return candidates[0]
+
+        # Fallback: WASAPI device with many channels even if not named HDMI/AVR
+        for dev in self.list_playback_devices():
+            if dev.is_wasapi and dev.max_output_channels >= 4:
+                candidates.append(dev)
+
+        if candidates:
+            logger.info(f"WASAPI multichannel fallback: {[d.name for d in candidates]}")
+            return candidates[0]
+
+        return None
+
+    def find_asio_hdmi(self) -> Optional[AudioDevice]:
+        """Find HDMI/AVR audio via ASIO (less common — some systems use ASIO for HDMI too)."""
+        candidates = []
+        for dev in self.list_playback_devices():
+            name = dev.name.lower()
+            is_hdmi_avr = any(k in name for k in ["hdmi", "avr", "receiver", "denon", "marantz", "yamaha", "onkyo", "pioneer"])
+            if is_hdmi_avr and dev.is_asio:
+                candidates.append(dev)
+
+        if candidates:
+            logger.info(f"ASIO HDMI/AVR candidates: {[d.name for d in candidates]}")
+            return candidates[0]
+
+        # ASIO multichannel fallback (some ASIO interfaces are multichannel)
+        for dev in self.list_playback_devices():
+            if dev.is_asio and dev.max_output_channels >= 4:
+                candidates.append(dev)
+
+        return candidates[0] if candidates else None
+
     def find_hdmi_audio(self) -> Optional[AudioDevice]:
-        """Find HDMI audio output (AVR or GPU HDMI audio)."""
+        """Find HDMI audio output (AVR or GPU HDMI audio).
+
+        Priority:
+        1. WASAPI HDMI/AVR (recommended for Windows — proper multichannel + Atmos)
+        2. ASIO HDMI/AVR (if WASAPI not available)
+        3. Any HDMI-named device (MME fallback)
+        """
+        # Try WASAPI first — it's the modern Windows audio API and works best with AVRs
+        wasapi = self.find_wasapi_hdmi()
+        if wasapi:
+            return wasapi
+
+        # Fall back to ASIO if WASAPI isn't available
+        asio = self.find_asio_hdmi()
+        if asio:
+            logger.warning("Using ASIO for HDMI audio — WASAPI preferred. If you have issues, check ASIO drivers.")
+            return asio
+
+        # Last resort: any HDMI-named device via MME
         candidates = []
         for dev in self.list_playback_devices():
             name = dev.name.lower()
             if any(k in name for k in ["hdmi", "avr", "receiver", "nvidia", "amd", "intel"]):
                 candidates.append(dev)
-        # Prefer non-ASIO (WASAPI) for HDMI
-        non_asio = [d for d in candidates if not d.is_asio]
-        return non_asio[0] if non_asio else candidates[0] if candidates else None
+        return candidates[0] if candidates else None
+
+    def find_hdmi_audio_with_preference(self, preferred_api: str = "wasapi") -> Optional[AudioDevice]:
+        """Find HDMI audio preferring a specific API.
+
+        Args:
+            preferred_api: "wasapi", "asio", or "any" (default "wasapi")
+
+        Returns:
+            AudioDevice or None.
+        """
+        if preferred_api == "wasapi":
+            return self.find_wasapi_hdmi() or self.find_asio_hdmi() or self.find_hdmi_audio()
+        elif preferred_api == "asio":
+            return self.find_asio_hdmi() or self.find_wasapi_hdmi() or self.find_hdmi_audio()
+        else:  # "any"
+            return self.find_hdmi_audio()
 
     # -------------------------------------------------------------------------
     # Device configuration

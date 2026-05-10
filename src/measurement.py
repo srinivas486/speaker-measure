@@ -539,11 +539,77 @@ if __name__ == "__main__":
 
     # ── Device selection ───────────────────────────────────────────────
     print("\n=== Device Configuration ===")
-    pb, cap, num_subwoofers = orch.engine.interactive_pick_devices()
-    orch.engine.set_playback_device(pb)
-    orch.engine.set_capture_device(cap)
-    orch.engine.set_sample_rate(config.sample_rate)
-    orch.engine.set_buffer_size(config.buffer_size)
+
+    # ── API preference ────────────────────────────────────────────────
+    # WASAPI is the default because it properly exposes all HDMI/Atmos channels
+    # on Windows. ASIO is also supported. If you have multichannel output via
+    # a different API, use "any".
+    api_opts = {
+        "1": ("wasapi", "WASAPI (recommended — full Atmos support)"),
+        "2": ("asio",   "ASIO (use if WASAPI doesn't show all channels)"),
+        "3": ("any",    "Any API (auto-detect)"),
+    }
+    print("\n=== Audio API Preference ===")
+    print("  WASAPI is recommended for HDMI/AVR receivers — it exposes all")
+    print("  channel beds including Atmos height channels (5.1.2, 7.1.4, etc.)")
+    for k, (api, desc) in api_opts.items():
+        print(f"  [{k}] {desc}")
+    api_choice = input(f"Audio API [1 for WASAPI, Enter for default]: ").strip() or "1"
+    preferred_api = api_opts.get(api_choice, ("wasapi", ""))[0]
+    print(f"  Using API: {preferred_api.upper()}")
+
+    # ── Device selection (API-aware) ──────────────────────────────────
+    detector = HdmiChannelDetector()
+    print(f"\n=== Detecting {preferred_api.upper()} HDMI/AVR devices ===")
+
+    # Show devices by preferred API first
+    candidates: list[HdmiDeviceInfo] = []
+    if preferred_api == "wasapi":
+        candidates = (
+            detector.list_devices_by_api("wasapi")
+            or detector.list_devices_by_api("asio")
+            or detector.list_all_multichannel_devices()
+        )
+    elif preferred_api == "asio":
+        candidates = (
+            detector.list_devices_by_api("asio")
+            or detector.list_devices_by_api("wasapi")
+            or detector.list_all_multichannel_devices()
+        )
+    else:
+        candidates = detector.list_all_multichannel_devices()
+
+    if not candidates:
+        print("  No multichannel HDMI/AVR devices found!")
+        print("  Check that:")
+        print("    1. Your AVR/receiver is connected via HDMI")
+        print("    2. HDMI audio is enabled in Windows Sound settings")
+        print("    3. The correct HDMI input is selected on your AVR")
+        raise RuntimeError("No HDMI/AVR multichannel device detected")
+
+    print("\n  Available multichannel devices:")
+    for i, d in enumerate(candidates):
+        marker = " (recommended)" if i == 0 else ""
+        print(f"  [{i}] {d.name} [{d.hostapi}] — {d.channel_count}ch — {d.layout_type}{marker}")
+
+    sel_str = input(f"\n  Select device [0-{len(candidates)-1}, Enter for 0]: ").strip()
+    sel_idx = int(sel_str) if sel_str else 0
+    dev_info = candidates[sel_idx]
+
+    # Configure engine with selected device
+    pb_dev = AudioDevice(sd.query_devices(dev_info.device_index))
+    orch.engine.set_playback_device(pb_dev)
+    print(f"  Selected: {pb_dev.name} [{pb_dev.hostapi_name}] — {pb_dev.max_output_channels}ch")
+    print(f"  Layout: {dev_info.layout_type}")
+
+    # Capture device
+    cap_dev = orch.engine.list_capture_devices()
+    if not cap_dev:
+        raise RuntimeError("No capture device found (is UMIK-1 connected?)")
+
+    umik = next((d for d in cap_dev if "umik" in d.name.lower()), cap_dev[0])
+    orch.engine.set_capture_device(umik)
+    print(f"  Capture: {umik.name}")
 
     # ── Calibration file ───────────────────────────────────────────
     cal_defaults = [
@@ -599,14 +665,32 @@ if __name__ == "__main__":
     print(f"\n  ℹ  Set your AVR to your reference volume (e.g. -12 dBFS master volume)")
     print(f"     and use the same level for all measurements to get comparable SPL results.")
 
-    # ── Layout from device channel count ───────────────────────────────
-    ch_list = orch.engine.build_channel_list_for_device(pb, num_subwoofers=num_subwoofers)
+    # ── Build channel list from detected HDMI device info ───────────
+    # Use HDMI channel mapping (not the generic layout_map) so all Atmos
+    # height channels (FDL, FDR, SDL, SDR, etc.) are properly detected
+    # based on the actual channel count reported by the WASAPI/ASIO device.
+    dev_ch_list = dev_info.channels
+    non_sub = [c for c in dev_ch_list if not c.is_subwoofer]
+    sub_ch_list = [c for c in dev_ch_list if c.is_subwoofer]
+
+    # Ask how many subwoofers to measure (if any detected)
+    num_subwoofers = 0
+    if sub_ch_list:
+        print(f"\n  Subwoofer channels detected: {[c.label for c in sub_ch_list]}")
+        num_sub_str = input(f"  Number of subwoofers to measure [1, max {len(sub_ch_list)}]: ").strip()
+        num_subwoofers = int(num_sub_str) if num_sub_str else 1
+        num_subwoofers = min(num_subwoofers, len(sub_ch_list))
+
     config.channels = [
-        ChannelConfig(channel_id=label, is_subwoofer=is_sub, speaker_distance_m=3.0)
-        for label, _, is_sub in ch_list
+        ChannelConfig(
+            channel_id=c.label.lower(),
+            is_subwoofer=c.is_subwoofer,
+            speaker_distance_m=3.0,
+        )
+        for c in (non_sub + sub_ch_list[:num_subwoofers])
     ]
 
-    # ── Subwoofer count (only asked if LFE detected) ──────────────────
+    # ── Subwoofer switching ─────────────────────────────────────────
     if num_subwoofers > 0:
         config.num_subwoofers = num_subwoofers
         config.pause_for_subwoofer_switch = True

@@ -66,7 +66,7 @@ class HdmiDeviceInfo:
     """Full HDMI/ASIO audio device with all channel information."""
     device_index: int
     name: str
-    hostapi: str
+    hostapi: str                  # host API name, e.g. "Windows WASAPI"
     channel_count: int           # Total number of output channels
     channels: list[HdmiChannelInfo] = field(default_factory=list)
     subwoofer_count: int = 0      # How many subwoofer channels detected
@@ -115,7 +115,7 @@ class HdmiChannelDetector:
         return devices
 
     def list_all_multichannel_devices(self) -> list[HdmiDeviceInfo]:
-        """List ALL output devices with 4+ channels (not just HDMI-named).
+        """List ALL output devices with 4+ channels (not just HDMI-named), grouped by host API.
 
         Use this as a fallback to find any multichannel audio interface.
         """
@@ -126,6 +126,31 @@ class HdmiChannelDetector:
 
         for dev in all_devs:
             if dev["max_output_channels"] >= 4:
+                info = self._build_device_info(dev)
+                devices.append(info)
+
+        return devices
+
+    def list_devices_by_api(self, api_name_fragment: str = "wasapi") -> list[HdmiDeviceInfo]:
+        """List multichannel devices for a specific host API.
+
+        Args:
+            api_name_fragment: "wasapi", "asio", "mme", "wdmks", etc. Case-insensitive.
+
+        Returns:
+            List of HdmiDeviceInfo for devices on that API with 4+ channels.
+        """
+        fragment = api_name_fragment.lower()
+        devices = []
+        all_devs = sd.query_devices()
+        if isinstance(all_devs, dict):
+            all_devs = [all_devs]
+
+        for dev in all_devs:
+            if dev["max_output_channels"] < 4:
+                continue
+            hostapi_name = sd.query_hostapis(dev["hostapi"])["name"].lower()
+            if fragment in hostapi_name:
                 info = self._build_device_info(dev)
                 devices.append(info)
 
@@ -302,11 +327,19 @@ class HdmiChannelDetector:
 def detect_avr_channels(
     device_index: Optional[int] = None,
     device_name_fragment: Optional[str] = None,
+    api_preference: str = "wasapi",
 ) -> HdmiDeviceInfo:
     """One-shot detection of AVR/HDMI channels.
 
-    Provide either device_index (sounddevice id) or device_name_fragment
-    (e.g. "HDMI" or "Denon"). If neither, auto-detects first multichannel device.
+    Provide either device_index (sounddevice id), device_name_fragment
+    (e.g. "HDMI" or "Denon"), or let it auto-detect the best multichannel device.
+
+    Args:
+        device_index: sounddevice device index. If provided, used directly.
+        device_name_fragment: Name fragment to match (e.g. "HDMI", "Denon").
+        api_preference: "wasapi" (default), "asio", or "any" — controls which host API
+                       is preferred when multiple candidates exist. WASAPI is recommended
+                       because it properly exposes all HDMI/Atmos channels.
 
     Returns HdmiDeviceInfo.
     """
@@ -323,11 +356,34 @@ def detect_avr_channels(
             if device_name_fragment.lower() in dev["name"].lower():
                 return detector.detect_channels(dev["index"])
 
-    # Auto: find first multichannel device
-    devices = detector.list_all_multichannel_devices()
-    if not devices:
+    # Auto: find best multichannel device, respecting api_preference
+    candidates: list[HdmiDeviceInfo] = []
+
+    if api_preference == "wasapi":
+        # Try WASAPI first, then ASIO, then any
+        candidates = (
+            detector.list_devices_by_api("wasapi")
+            or detector.list_devices_by_api("asio")
+            or detector.list_all_multichannel_devices()
+        )
+    elif api_preference == "asio":
+        candidates = (
+            detector.list_devices_by_api("asio")
+            or detector.list_devices_by_api("wasapi")
+            or detector.list_all_multichannel_devices()
+        )
+    else:
+        candidates = detector.list_all_multichannel_devices()
+
+    if not candidates:
         raise RuntimeError("No multichannel HDMI/AVR audio device found")
-    return devices[0]
+
+    # Prefer HDMI/AVR-named devices over generic ones
+    for cand in candidates:
+        if any(k in cand.name.lower() for k in ["hdmi", "avr", "receiver", "denon", "marantz", "yamaha"]):
+            return cand
+
+    return candidates[0]
 
 
 # -----------------------------------------------------------------------------
@@ -343,7 +399,24 @@ if __name__ == "__main__":
     print("\n=== HDMI / AVR Devices ===")
     hdmi_devs = detector.list_hdmi_devices()
     for d in hdmi_devs:
+        api = d.hostapi
         print(f"  [{d.device_index}] {d.name} ({d.hostapi}) — {d.channel_count}ch — {d.layout_type}")
+
+    print("\n=== WASAPI Multichannel Devices (recommended for Atmos) ===")
+    wasapi_devs = detector.list_devices_by_api("wasapi")
+    if wasapi_devs:
+        for d in wasapi_devs:
+            print(f"  [{d.device_index}] {d.name} — {d.channel_count}ch — {d.layout_type}")
+    else:
+        print("  None found")
+
+    print("\n=== ASIO Multichannel Devices ===")
+    asio_devs = detector.list_devices_by_api("asio")
+    if asio_devs:
+        for d in asio_devs:
+            print(f"  [{d.device_index}] {d.name} — {d.channel_count}ch — {d.layout_type}")
+    else:
+        print("  None found")
 
     print("\n=== All Multichannel Devices (fallback) ===")
     mc_devs = detector.list_all_multichannel_devices()
