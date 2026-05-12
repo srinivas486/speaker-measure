@@ -71,10 +71,11 @@ class MeasurementConfig:
                               # If 0, auto-detected from HDMI. If HDMI reports fewer,
                               # only measure that many.
     use_sss: bool = False    # use Synchronized Swept Sine method (Novák 2015) for cleaner IR
-    # Per-subwoofer amplitude relative to main sweep amplitude (additional reduction)
-    # AVR bass management +10-12 dB boost on LFE channel → sweep at -30 dBFS is already safe,
-    # but we note it so users understand why subwoofer sweeps are quieter than speaker sweeps
     subwoofer_sweep_reduction_db: float = 0.0  # extra reduction (already baked into amplitude_dbfs_lfe)
+    # Sweep file path (optional). If set, the sweep is loaded from this file instead of
+    # being generated internally. Supports .wav (via soundfile) and .mpl TrueHD (via ffmpeg).
+    # All Atmos + non-Atmos speakers are measured using this single sweep as the reference.
+    sweep_file: Optional[str | Path] = None
 
 
 class MeasurementOrchestrator:
@@ -107,9 +108,14 @@ class MeasurementOrchestrator:
         self._progress_callback: Optional[Callable[[str, float], None]] = None
         self._cancelled = False
         self._subwoofer_indices: list[int] = []  # e.g. [1, 2] for 2-sub setup
+        self._sweep_reference: Optional[np.ndarray] = None  # loaded sweep file (all Atmos speakers use same reference)
 
         if config.mic_calibration_path:
             self.calibration.load_file(config.mic_calibration_path)
+
+        # Pre-load sweep file if provided (all Atmos speakers measured against same reference)
+        if config.sweep_file:
+            self._load_sweep_file(Path(config.sweep_file))
 
     def set_progress_callback(self, callback: Callable[[str, float], None]) -> None:
         self._progress_callback = callback
@@ -122,6 +128,61 @@ class MeasurementOrchestrator:
         if self._progress_callback:
             self._progress_callback(message, fraction)
         logger.info(f"[{fraction*100:.0f}%] {message}")
+
+    # -------------------------------------------------------------------------
+    # Sweep file loading (Atmos sweep-file workflow)
+    # -------------------------------------------------------------------------
+
+    def _load_sweep_file(self, path: Path) -> None:
+        """Load a sweep file for use as the reference sweep.
+
+
+        Supports:
+          - .wav / .aiff / .flac  → soundfile (stereo float32)
+          - .mpl TrueHD files     → ffmpeg subprocess decode to stereo PCM
+
+        The loaded sweep is used as the reference for deconvolution of ALL channels.
+        """
+        import subprocess
+
+        path = Path(path)
+        self._report_progress(f"Loading sweep file: {path.name}...", 0.0)
+
+
+        if not path.exists():
+            raise FileNotFoundError(f"Sweep file not found: {path}")
+
+        if path.suffix.lower() == ".mpl":
+            # TrueHD MLP: decode via ffmpeg to stereo float32 PCM
+            result = subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-i", str(path),
+                "-map", "0:a:0",
+                "-af", "aformat=sample_fmts=fltp:channel_layouts=stereo",
+                "-ar", "48000",
+                "-f", "f32le", "pipe:1",
+            ], capture_output=True)
+            if result.returncode != 0:
+                err = result.stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"ffmpeg decode failed for {path.name}: {err}")
+            raw = result.stdout
+            n_floats = len(raw) // 4
+            floats = np.frombuffer(raw, dtype=np.float32).copy()
+            n_frames = n_floats // 2
+            self._sweep_reference = floats.reshape((n_frames, 2)).astype(np.float32)
+            logger.info(f"TrueHD MLP decoded: {n_frames} frames ({n_frames/48000:.2f}s)")
+        else:
+            # WAV / FLAC / AIFF — load with soundfile
+            import soundfile as sf
+            data, sr = sf.read(str(path), dtype="float32")
+            if sr != self.config.sample_rate:
+                raise ValueError(f"Sweep sample rate {sr} ≠ {self.config.sample_rate} — resampling not yet supported")
+            if data.ndim == 1:
+                data = np.stack([data, data], axis=1)
+            self._sweep_reference = data.astype(np.float32)
+            logger.info(f"Sweep file loaded: {len(data)} samples ({len(data)/sr:.2f}s)")
+
+        self._report_progress(f"Sweep reference ready ({len(self._sweep_reference)/self.config.sample_rate:.1f}s)", 0.05)
 
     # -------------------------------------------------------------------------
     # Device setup helpers
@@ -251,7 +312,13 @@ class MeasurementOrchestrator:
         channel: ChannelConfig,
         position_index: int = 0,
     ) -> MeasurementResult:
-        """Measure a single channel: play sweep → capture → deconvolve → export."""
+        """Measure a single channel: play sweep → capture → deconvolve → export.
+
+        When sweep_file is set in config, plays the loaded sweep reference
+        (from a .mpl TrueHD or .wav file) routed to the channel's HDMI output,
+        then deconvolves using the same reference sweep. This enables
+        Atmos/Auro3D speaker measurement without REW.
+        """
         result = MeasurementResult(
             channel_id=channel.channel_id,
             ir=np.array([]),
@@ -259,9 +326,18 @@ class MeasurementOrchestrator:
             spl_db=np.array([]),
         )
 
+        use_sweep_file = self._sweep_reference is not None
+
         try:
-            self._report_progress(f"Generating sweep for {channel.channel_id}...", 0.0)
-            sweep = self.processor.generate_sweep(is_subwoofer=channel.is_subwoofer)
+            if use_sweep_file:
+                sweep = self._sweep_reference
+                self._report_progress(
+                    f"Playing sweep-file reference on {channel.channel_id}...", 0.0)
+            else:
+                self._report_progress(
+                    f"Generating sweep for {channel.channel_id}...", 0.0)
+                sweep = self.processor.generate_sweep(
+                    is_subwoofer=channel.is_subwoofer)
 
             self._report_progress(f"Playing sweep on {channel.channel_id}...", 0.1)
 
@@ -320,11 +396,19 @@ class MeasurementOrchestrator:
 
             self._report_progress(f"Sweep complete, processing...", 0.6)
 
-            ir = self.processor.measure_impulse_response(
-                captured_mic=recorded,
-                window_ms=50.0,
-                fade_ms=5.0,
-            )
+            if use_sweep_file:
+                ir = self.processor.measure_impulse_response_from_file(
+                    captured_mic=recorded,
+                    sweep_file_data=sweep,
+                    window_ms=50.0,
+                    fade_ms=5.0,
+                )
+            else:
+                ir = self.processor.measure_impulse_response(
+                    captured_mic=recorded,
+                    window_ms=50.0,
+                    fade_ms=5.0,
+                )
 
             freq, spl = self.processor.get_frequency_response(ir)
 

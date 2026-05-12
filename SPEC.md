@@ -6,9 +6,10 @@ A professional-grade home cinema room measurement tool for Windows and macOS. Pl
 
 Feel: **clinical precision meets dark-mode studio aesthetic.** Not a toy — a serious measurement instrument that happens to have a UI.
 
-**Two measurement modes:**
-1. **REW workflow** (recommended): Play pre-recorded TrueHD sweep files (.mpl) through the AVR, record UMIK-1 response, import into REW for processing. AVR stays in Dolby Atmos mode throughout.
-2. **Internal sweep mode**: Generate sine sweeps internally, play through AVR, capture and deconvolve locally (Phase 2 signal processing pipeline).
+**Three measurement modes:**
+1. **REW workflow**: Play pre-recorded TrueHD sweep files (.mpl) through the AVR, record UMIK-1 response, import into REW for processing. AVR stays in Dolby Atmos mode throughout.
+2. **Internal sweep-file mode** *(recommended for Atmos, no REW required)*: Same as REW workflow but uses the built-in deconvolution instead of REW. Load the .mpl TrueHD file once as sweep reference; all Atmos speakers (TFL, TFR, FHL, FHR, etc.) play that sweep routed to their respective HDMI channels, then deconvolved against the same reference. Works on Windows + macOS with no REW needed.
+3. **Internal sweep mode**: Generate sine sweeps internally, play through AVR, capture and deconvolve locally (Phase 2 signal processing pipeline). Best for simple non-Atmos setups.
 
 ---
 
@@ -92,6 +93,7 @@ src/
 - [x] **HDMI channel detection**: auto-detect all HDMI/ASIO output channels and map to standard labels (FL, FR, C, LFE, SW1/SW2/SW3/SW4, FDL, FDR, etc.)
 - [x] **Subwoofer switching prompt**: when 2+ subwoofers are configured, pause and display a message instructing the user to switch subwoofers ON/OFF before each sub measurement
 - [x] **Selected-speaker measurement**: measure a specific subset of speakers (e.g. FDL, FDR, SW1, SW2) instead of all channels
+- [x] **Internal sweep-file Atmos mode**: Load a .mpl TrueHD or .wav sweep file as the reference sweep. All Atmos/non-Atmos speakers are measured by routing this sweep to their HDMI output and deconvolving against the same reference. No REW required. Supports .mpl (via ffmpeg decode) and .wav/.flac/.aiff (via soundfile). Configured via `config.sweep_file`.
 - [x] **REW API import**: play sweep WAV + per-channel .mpl files through AVR, record UMIK-1 response, import into REW for deconvolution and frequency response. AVR stays in Dolby Atmos mode throughout.
 
 ### Phase 4 — Results & Export

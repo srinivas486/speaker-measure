@@ -340,6 +340,37 @@ class SignalProcessor:
     def get_frequency_response(self, ir: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return self.deconvolver.extract_frequency_response(ir)
 
+    def measure_impulse_response_from_file(
+        self,
+        captured_mic: np.ndarray,
+        sweep_file_data: np.ndarray,
+        window_ms: float = 50.0,
+        fade_ms: float = 5.0,
+    ) -> np.ndarray:
+        """Deconvolve using a pre-loaded sweep file as the reference.
+
+        Use this when measuring Atmos speakers with the OCA TrueHD .mpl sweep files.
+        The sweep file was decoded from .mpl via ffmpeg and contains the actual
+        exponential sine sweep that was played through the AVR.
+
+        Args:
+            captured_mic: Recorded microphone signal, shape (N,) or (N, 1)
+            sweep_file_data: The decoded sweep reference, shape (M, 2) or (M,)
+            window_ms: Time-gating window in ms
+            fade_ms: Cosine fade-out at end of window
+
+        Returns:
+            Impulse response array (time-domain).
+        """
+        # Build inverse filter from the loaded sweep (time-reversed, amplitude-normalised)
+        if sweep_file_data.ndim == 1:
+            sweep_mono = sweep_file_data
+        else:
+            sweep_mono = sweep_file_data[:, 0]  # use first HDMI channel's sweep
+
+        inv_filter = np.flipud(sweep_mono) / (np.sum(sweep_mono ** 2) + 1e-12)
+        return self.deconvolver.deconvolve(captured_mic, inv_filter, window_ms, fade_ms)
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
