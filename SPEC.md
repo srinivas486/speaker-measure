@@ -2,9 +2,13 @@
 
 ## 1. Concept & Vision
 
-A professional-grade home cinema room measurement tool for Windows. Plays lossless test signals (sweeps) through the AV receiver via ASIO, captures the response via measurement microphone, processes the impulse response, and exports 48 kHz WAV files compatible with REW and other calibration tools.
+A professional-grade home cinema room measurement tool for Windows and macOS. Plays lossless test signals through the AV receiver (ASIO on Windows, CoreAudio on macOS), captures the response via measurement microphone, and imports recorded sweeps into REW for deconvolution and room correction analysis.
 
 Feel: **clinical precision meets dark-mode studio aesthetic.** Not a toy — a serious measurement instrument that happens to have a UI.
+
+**Two measurement modes:**
+1. **REW workflow** (recommended): Play pre-recorded TrueHD sweep files (.mpl) through the AVR, record UMIK-1 response, import into REW for processing. AVR stays in Dolby Atmos mode throughout.
+2. **Internal sweep mode**: Generate sine sweeps internally, play through AVR, capture and deconvolve locally (Phase 2 signal processing pipeline).
 
 ---
 
@@ -13,11 +17,11 @@ Feel: **clinical precision meets dark-mode studio aesthetic.** Not a toy — a s
 | Layer | Choice | Rationale |
 |---|---|---|
 | **Language** | Python 3.10+ | Ecosystem, audio libs |
-| **Audio I/O** | `sounddevice` (PortAudio + ASIO) | Low-latency ASIO on Windows, playback+capture combined |
+| **Audio I/O** | `sounddevice` (PortAudio + ASIO/CoreAudio) | Low-latency ASIO on Windows, CoreAudio on macOS, playback+capture combined |
 | **GUI** | PyQt6 | Mature, professional look, good widget set |
 | **Signal Processing** | numpy + scipy | FFT, deconvolution, filtering |
 | **WAV I/O** | soundfile | Lossless FLAC/PCM WAV read/write |
-| **Packaging** | PyInstaller | Windows .exe generation |
+| **External tools** | `ffmpeg` (TrueHD MLP decode), REW HTTP API | MLP file decoding + REW import/deconvolution |
 
 **Why not C++/JUCE?** Python iteration speed is 10× faster for a tool of this complexity. ASIO latency via PortAudio is already excellent (~1-2 ms with small buffers).
 
@@ -46,18 +50,20 @@ Feel: **clinical precision meets dark-mode studio aesthetic.** Not a toy — a s
 
 ```
 src/
-  audio_engine.py      # sounddevice playrec, ASIO device handling, buffer management
-  signal_processor.py  # sweep generation, deconvolution, IR windowing, FFT
-  hdmi_channel_detector.py  # HDMI channel enumeration, subwoofer count, layout detection
-  avr_control.py       # AVR Telnet control (bass mode, subwoofer switching)
-  measurement.py       # per-channel measurement + subwoofer switching orchestration
-  mic_calibration.py   # apply mic calibration curve (optional .cal file)
-  exporter.py          # WAV export, delay/volume offset calculation
+  audio_engine.py         # sounddevice playrec, ASIO/CoreAudio device handling, buffer management
+  signal_processor.py      # sweep generation, deconvolution, IR windowing, FFT
+  hdmi_channel_detector.py # HDMI channel enumeration, subwoofer count, layout detection
+  avr_control.py          # AVR Telnet control (bass mode, subwoofer switching)
+  measurement.py          # per-channel measurement + subwoofer switching orchestration
+  mic_calibration.py     # apply mic calibration curve (optional .cal file)
+  exporter.py            # WAV export, delay/volume offset calculation
+  rew_api.py             # HTTP API client for REW (localhost:4735)
+  rew_measurement.py     # REW workflow orchestrator (TrueHD .mpl + sweep.wav)
   ui/
-    main_window.py     # PyQt6 main window
-    device_panel.py    # ASIO device + mic selection
-    measure_view.py    # Live measurement display
-    results_view.py    # Per-channel results, averaging, export
+    main_window.py        # PyQt6 main window
+    device_panel.py      # ASIO device + mic selection
+    measure_view.py       # Live measurement display
+    results_view.py      # Per-channel results, averaging, export
 ```
 
 ---
@@ -183,7 +189,41 @@ c,0.0,0.0,c_20260501_133045.wav
 
 ---
 
-## 8. Open Questions / Decisions Needed
+## 8. REW Measurement Workflow
+
+### File types
+| Extension | Description |
+|---------|-------------|
+| `.mpl` | TrueHD Meridian Lossless file (8-channel, per-channel sweep — decoded via `ffmpeg`) |
+| `.wav` | REW reference sweep stimulus (stereo Float32, 48kHz, 12.29s, -12dBFS) |
+| `.flac` | FLAC lossless (future use) |
+| `.aiff` | AIFF lossless (future use) |
+
+### TrueHD MLP decoding
+MLP files (`.mpl`) are Meridian Lossless Packing containers with 8 audio channels. Each file has **one active channel** (the signal) with all other channels silent. Decoding is done via `ffmpeg` subprocess:
+```bash
+ffmpeg -hide_banner -loglevel error \
+  -i channel.mlp \
+  -map 0:a:0 \
+  -af aformat=sample_fmts=fltp:channel_layouts=stereo \
+  -ar 48000 -f f32le pipe:1
+```
+
+### Subwoofer switching workflow
+For multi-subwoofer systems, the app pauses before each subwoofer measurement and displays:
+```
+===========================
+  SUBWOOFER SWITCH REQUIRED
+===========================
+  Measure : SW2
+  Switch ON : SW2
+  Switch OFF: SW1, SW3, SW4
+===========================
+  Press ENTER after switching subwoofers to continue...
+```
+
+
+## 9. Open Questions / Decisions Needed
 
 1. **ASIO driver availability**: User must install ASIO driver for their audio interface. App should detect and show friendly error if no ASIO device found.
 2. **Mic detection**: How does user identify which input is the measurement mic vs. monitor mix? Show channel labels.
