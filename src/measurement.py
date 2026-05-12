@@ -57,7 +57,7 @@ class MeasurementConfig:
     sweep_duration_sec: float = 6.0  # longer sweep for better low-freq resolution
     sweep_start_hz: float = 20.0
     sweep_end_hz: float = 20000.0
-    sweep_amplitude_dbfs: float = -12.0
+    sweep_amplitude_dbfs: float = -12.0    # peak dBFS for regular speakers
     sweep_amplitude_dbfs_lfe: float = -30.0  # much lower for LFE to avoid overdriving subwoofer
     suggested_avr_volume_db: float = -15.0   # master volume suggestion for safe SPL
     sample_rate: int = 48000
@@ -71,6 +71,10 @@ class MeasurementConfig:
                               # If 0, auto-detected from HDMI. If HDMI reports fewer,
                               # only measure that many.
     use_sss: bool = False    # use Synchronized Swept Sine method (Novák 2015) for cleaner IR
+    # Per-subwoofer amplitude relative to main sweep amplitude (additional reduction)
+    # AVR bass management +10-12 dB boost on LFE channel → sweep at -30 dBFS is already safe,
+    # but we note it so users understand why subwoofer sweeps are quieter than speaker sweeps
+    subwoofer_sweep_reduction_db: float = 0.0  # extra reduction (already baked into amplitude_dbfs_lfe)
 
 
 class MeasurementOrchestrator:
@@ -358,24 +362,31 @@ class MeasurementOrchestrator:
         """Show user instruction to switch subwoofers before measuring.
 
         Called before measuring each subwoofer when multiple are configured.
-        The callback should display a message to the user and wait for confirmation
+        The user sees a clear message:
+        - Switch ON the target subwoofer
+        - Switch OFF all other subwoofers
+
+        The callback should display this to the user and wait for confirmation
         before returning (so measurement proceeds only after the switch is done).
 
-        If no callback is configured, logs the instruction instead.
+        If no callback is configured, logs the instruction and does an input() wait.
         """
         all_subs = self._subwoofer_indices
         others = [s for s in all_subs if s != target_sub_index]
-        msg = (f"SUBWOOFER SWITCH — Measure Subwoofer {target_sub_index} of {len(all_subs)}\n"
-               f"\n"
-               f"  ► Switch ON Subwoofer {target_sub_index}\n"
-               f"  ► Switch OFF: {others if others else 'none'}\n"
-               f"\n"
-               f"Then press Enter / click Proceed to continue measuring...")
 
         if self.config.subwoofer_switch_callback:
             self.config.subwoofer_switch_callback(target_sub_index, all_subs)
         else:
-            logger.info(msg)
+            print(f"\n{'='*60}")
+            print(f"  SUBWOOFER {target_sub_index} MEASUREMENT")
+            print(f"{'='*60}")
+            print(f"  ➤ Switch ON:  Subwoofer {target_sub_index}")
+            if others:
+                print(f"  ➤ Switch OFF: {'Subwoofer ' + ', Subwoofer '.join(str(s) for s in others)}")
+            else:
+                print(f"  ➤ Switch OFF: (no other subwoofers)")
+            print(f"{'='*60}")
+            input(f"  Press ENTER after switching subwoofers to continue... ")
 
     # -------------------------------------------------------------------------
     # Multi-channel / multi-position measurement
