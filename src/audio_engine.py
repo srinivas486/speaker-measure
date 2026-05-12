@@ -16,6 +16,9 @@ HOSTAPI_MME = 0    # Windows MultiMedia Extensions (legacy)
 HOSTAPI_WASAPI = 3 # Windows Audio Session API (preferred for HDMI/AVR multichannel)
 HOSTAPI_ASIO = 1   # ASIO (hardware-specific, bypasses Windows audio)
 HOSTAPI_WDMKS = 4  # Windows Driver Model (kernel streaming, also good for HDMI)
+# macOS / Linux: PortAudio maps host APIs differently — detect at runtime
+HOSTAPI_COREAUDIO = "CoreAudio"  # macOS native audio (via PortAudio)
+HOSTAPI_ALSA = "ALSA"            # Linux native audio (via PortAudio)
 
 
 
@@ -30,9 +33,13 @@ class AudioDevice:
         self.max_input_channels = info.get("max_input_channels", 0)
         self.max_output_channels = info.get("max_output_channels", 0)
         self.default_samplerate = info.get("default_samplerate", 48000)
+        import platform
         self.is_asio = "ASIO" in info["name"]
         self.is_usb = "USB" in info["name"]
         self.is_wasapi = self.hostapi_name == "Windows WASAPI"
+        self.is_coreaudio = self.hostapi_name == "CoreAudio"
+        self.is_alsa = self.hostapi_name == "ALSA"
+        self.is_mac = platform.system() == "Darwin"
         self.is_avr = any(k in info["name"].lower() for k in ["hdmi", "avr", "receiver", "denon", "marantz", "yamaha", "onkyo", "pioneer"])
 
     def _get_hostapi_name(self, hostapi_index: int) -> str:
@@ -41,9 +48,14 @@ class AudioDevice:
         except Exception:
             return "unknown"
 
-    def supports_wasapi(self) -> bool:
-        """Return True if this device can be used with WASAPI."""
-        return self.is_wasapi and self.max_output_channels >= 2
+    def supports_multichannel(self) -> bool:
+        """Return True if device can carry multichannel HDMI/Atmos content."""
+        if self.is_wasapi:
+            return self.max_output_channels >= 2
+        if self.is_coreaudio:
+            # On macOS, HDMI/Thunderbolt output can carry multichannel PCM to AVR
+            return self.max_output_channels >= 2
+        return self.max_output_channels >= 2
 
     def __repr__(self):
         api_tag = f" [{self.hostapi_name}]" if self.hostapi_name != "unknown" else ""
@@ -301,23 +313,51 @@ class AudioEngine:
     def find_hdmi_audio(self) -> Optional[AudioDevice]:
         """Find HDMI audio output (AVR or GPU HDMI audio).
 
-        Priority:
-        1. WASAPI HDMI/AVR (recommended for Windows — proper multichannel + Atmos)
-        2. ASIO HDMI/AVR (if WASAPI not available)
-        3. Any HDMI-named device (MME fallback)
+        Priority by platform:
+        - Windows: WASAPI → ASIO → MME HDMI-named devices
+        - macOS: CoreAudio HDMI/DisplayPort devices → aggregate devices
+        - Linux: ALSA HDMI devices
+
+        On macOS, multichannel PCM over HDMI requires:
+        1. Mac connected to AVR via HDMI/Thunderbolt→HDMI
+        2. AVR selected as audio output in System Settings → Sound → Output
+        3. Audio Format set to 48kHz multichannel (Automatic or Manual)
+        4. No Dolby/DTS encoding passthrough — pure PCM required
         """
-        # Try WASAPI first — it's the modern Windows audio API and works best with AVRs
+        import platform
+
+        # macOS: use CoreAudio HDMI/DisplayPort audio
+        if platform.system() == "Darwin":
+            for dev in self.list_playback_devices():
+                name = dev.name.lower()
+                # macOS names HDMI audio as "HDMI", "DisplayPort", or the AVR name
+                is_hdmi = any(k in name for k in ["hdmi", "displayport", "avr", "receiver"])
+                if is_hdmi and dev.is_coreaudio:
+                    logger.info(f"CoreAudio HDMI/AVR: {dev.name} ({dev.max_output_channels}ch)")
+                    return dev
+            # Fallback: any CoreAudio device with 8+ output channels
+            for dev in self.list_playback_devices():
+                if dev.is_coreaudio and dev.max_output_channels >= 8:
+                    logger.info(f"CoreAudio multichannel fallback: {dev.name} ({dev.max_output_channels}ch)")
+                    return dev
+            # Last resort: any CoreAudio device
+            for dev in self.list_playback_devices():
+                if dev.is_coreaudio:
+                    logger.info(f"CoreAudio fallback: {dev.name} ({dev.max_output_channels}ch)")
+                    return dev
+            return None
+
+        # Windows: WASAPI first (recommended), then ASIO, then MME
         wasapi = self.find_wasapi_hdmi()
         if wasapi:
             return wasapi
 
-        # Fall back to ASIO if WASAPI isn't available
         asio = self.find_asio_hdmi()
         if asio:
-            logger.warning("Using ASIO for HDMI audio — WASAPI preferred. If you have issues, check ASIO drivers.")
+            logger.warning("Using ASIO for HDMI audio — WASAPI preferred. "
+                           "If you have issues, check ASIO drivers.")
             return asio
 
-        # Last resort: any HDMI-named device via MME
         candidates = []
         for dev in self.list_playback_devices():
             name = dev.name.lower()
