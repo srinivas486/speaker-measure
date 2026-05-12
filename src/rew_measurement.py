@@ -42,11 +42,66 @@ logger = logging.getLogger(__name__)
 
 # Extension → (description, is_subwoofer_candidate)
 _AUDIO_EXTENSIONS = {
-    ".mpl": "Meridian Lossless Playlist (per-channel speaker file)",
-    ".wav": "Wave audio (sweep stimulus)",
+    ".mpl": "Meridian Lossless Playlist (TrueHD per-channel speaker file, 8ch)",
+    ".wav": "Wave audio (REW reference sweep stimulus)",
     ".flac": "FLAC lossless",
     ".aiff": "AIFF lossless",
 }
+
+# TrueHD MLP files are 8-channel. Each file has ONE active channel (the rest are silent).
+# The active channel is always the first channel of the file.
+# MLP files cannot be read by soundfile — use ffmpeg subprocess to decode to PCM.
+
+
+def _read_audio_file(path: Path) -> tuple[np.ndarray, int]:
+    """Read an audio file, returning (audio_data, sample_rate).
+
+    For WAV/FLAC/AIFF: uses soundfile.
+    For TrueHD MLP (.mpl): decodes via ffmpeg subprocess, extracts first 2 channels.
+    Returns shape (n_samples, 2) stereo float32 array.
+    """
+    if path.suffix.lower() == ".mpl":
+        return _decode_truehd_mlp(path)
+    # WAV, FLAC, AIFF
+    try:
+        data, sr = sf.read(str(path), dtype="float32")
+        # Ensure stereo (duplicate mono if needed)
+        if data.ndim == 1:
+            data = np.stack([data, data], axis=1)
+        return data, sr
+    except Exception as e:
+        raise RewApiError(f"Cannot read {path.name}: {e}")
+
+
+def _decode_truehd_mlp(mlp_path: Path) -> tuple[np.ndarray, int]:
+    """Decode a TrueHD MLP file to stereo float32 PCM via ffmpeg.
+
+    Returns (audio_data, sample_rate=48000).
+    Only the first 2 channels are extracted (remaining 6 ch are always silent).
+    """
+    import subprocess
+
+    result = subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", str(mlp_path),
+        "-map", "0:a:0",
+        "-af", "aformat=sample_fmts=fltp:channel_layouts=stereo",
+        "-ar", "48000",
+        "-f", "f32le", "pipe:1",
+    ], capture_output=True)
+
+    if result.returncode != 0:
+        err = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RewApiError(f"ffmpeg decode failed for {mlp_path.name}: {err}")
+
+    raw = result.stdout
+    n_floats = len(raw) // 4
+    floats = np.frombuffer(raw, dtype=np.float32).copy()
+    # Stereo interleaved: [L0,R0,L1,R1,...]
+    n_frames = n_floats // 2
+    stereo = floats.reshape((n_frames, 2))
+    return stereo.astype(np.float32), 48000
+
 
 
 def _guess_channel_id_from_filename(filename: str) -> Optional[str]:
@@ -104,27 +159,6 @@ def _guess_channel_id_from_filename(filename: str) -> Optional[str]:
 
 def _is_subwoofer(channel_id: str) -> bool:
     return channel_id.upper() in ("SW1", "SW2", "SW3", "SW4", "LFE")
-
-
-def _read_audio_file(path: Path) -> tuple[np.ndarray, int]:
-    """Read an audio file, returning (audio_data, sample_rate).
-
-    Supports .wav, .aiff, .flac (auto-detected by content) and .mpl
-    (attempted as raw PCM or s帝国流通 lossless).
-    """
-    try:
-        data, sr = sf.read(str(path), dtype="float32")
-        return data, sr
-    except Exception as e:
-        logger.warning(f"soundfile failed for {path.name}: {e}, trying raw read")
-        # Fallback: try reading as raw PCM (some .mpl files are just raw PCM)
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        # Parse WAV header manually if it starts with "RIFF"
-        if raw.startswith(b"RIFF"):
-            #跳过头部但让soundfile处理更好
-            pass
-        raise RewApiError(f"Cannot read {path.name}: {e}")
 
 
 class RewMeasurementWorkflow:
