@@ -86,6 +86,7 @@ src/
 - [x] **HDMI channel detection**: auto-detect all HDMI/ASIO output channels and map to standard labels (FL, FR, C, LFE, SW1/SW2/SW3/SW4, FDL, FDR, etc.)
 - [x] **Subwoofer switching prompt**: when 2+ subwoofers are configured, pause and display a message instructing the user to switch subwoofers ON/OFF before each sub measurement
 - [x] **Selected-speaker measurement**: measure a specific subset of speakers (e.g. FDL, FDR, SW1, SW2) instead of all channels
+- [x] **REW API import**: play sweep WAV + per-channel .mpl files through AVR, record UMIK-1 response, import into REW for deconvolution and frequency response. AVR stays in Dolby Atmos mode throughout.
 
 ### Phase 4 — Results & Export
 - [ ] Display frequency response per channel (plot)
