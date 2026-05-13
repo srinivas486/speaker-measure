@@ -6,7 +6,7 @@ Designed for: OCA / AudioControl sweep file packs (.mlp per speaker + reference 
 
 Prerequisites:
   - REW running on this Windows machine with -api flag:
-      C:\Program Files\REW\roomeqwizard.exe -api
+      C:\\Program Files\\REW\\roomeqwizard.exe -api
   - sweep_folder contains:
       - One .wav file (no channel label in filename) = sweep reference for REW
       - One .mlp per speaker (FL.mlp, FR.mlp, C.mlp, SW1.mlp, SW2.mlp, etc.)
